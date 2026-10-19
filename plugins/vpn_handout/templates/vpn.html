@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="jumbotron">
+  <div class="container">
+    <h1>VPN Access</h1>
+  </div>
+</div>
+<div class="container">
+  {% if profile %}
+  <div class="row">
+    <div class="col-md-8 offset-md-2">
+      <p>
+        This profile is assigned to your account only. It is tied to a fixed
+        tunnel address, and all activity from it is attributed to you.
+        Do not share it &mdash; a shared profile is a revoked profile.
+      </p>
+      <table class="table">
+        <tr><th scope="row">Profile</th><td><code>{{ profile.filename }}</code></td></tr>
+        <tr><th scope="row">Your VPN address</th><td><code>{{ profile.vpn_ip }}</code></td></tr>
+      </table>
+      <a class="btn btn-primary btn-lg" href="/vpn/download">Download {{ profile.filename }}</a>
+      <hr>
+      <h4>Connecting</h4>
+      <pre><code>sudo openvpn --config {{ profile.filename }}</code></pre>
+      <p class="text-muted">
+        Windows/macOS: import the file into OpenVPN Connect or Tunnelblick.
+        Only the challenge host and this scoreboard are reachable through the
+        tunnel; your normal internet traffic is not routed over it.
+      </p>
+    </div>
+  </div>
+  {% else %}
+  <div class="alert alert-danger">
+    No VPN profiles remain in the pool. Please contact an organiser.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

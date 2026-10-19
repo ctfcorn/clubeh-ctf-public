@@ -1,0 +1,23 @@
+name: my-challenge
+type: static                # static = one shared always-on container | dynamic = a private instance per player (ctfd-whale)
+port: 8080                  # port your process LISTENS on inside the container
+protocol: tcp
+
+# --- static only ---
+published: 30010            # port players connect to on 10.0.0.4 (30000-32767, unique)
+flag: "clubeh{replace_me}"  # shared flag, delivered as /run/secrets/flag
+flag_mode: "0400"
+
+# --- dynamic only (whale creates the challenge in CTFd for you) ---
+category: web
+points: 100
+description: "One line shown in CTFd. Players press Start to get their own instance."
+redirect: direct            # direct = players get IP:port | http = subdomain routing (needs CTF_DOMAIN)
+
+# --- both ---
+replicas: 1
+cpus: "0.5"
+memory: "256M"
+pids: 128
+read_only: "true"
+caps: ""

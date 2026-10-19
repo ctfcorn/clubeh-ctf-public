@@ -1,0 +1,725 @@
+#!/usr/bin/env bash
+# ctfl - on-demand single-box CTF on Linode.
+#
+#   ./ctfl up      create a Linode, install CTFd + the static challenges,
+#                  restore your latest verified backup
+#   ./ctfl down    snapshot the event, download it, VERIFY, then DELETE
+#
+# Between events nothing exists at Linode, so nothing bills.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+need curl; need jq; need ssh; need scp; need tar
+
+# =====================================================================
+# helpers
+# =====================================================================
+latest_backup() { ls -1t "$BACKUP_DIR"/ctflite-*.tar.gz 2>/dev/null | head -1 || true; }
+
+static_challenges() {
+  local d
+  for d in "$CHALLENGES_DIR"/*/; do
+    d="${d%/}"
+    [[ "$(basename "$d")" == "_template" ]] && continue
+    [[ -f "$d/challenge.yml" ]] || continue
+    grep -qE '^type: *"?dynamic"?' "$d/challenge.yml" && continue
+    printf '%s\n' "$d"
+  done
+}
+
+chal_field() { awk -F': *' -v k="$2" '$1==k {print $2; exit}' "$1" | tr -d '"'"'"; }
+
+wait_for_ssh() {
+  local ip="$1" deadline=$(( $(date +%s) + 300 ))
+  while (( $(date +%s) < deadline )); do
+    if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 -o BatchMode=yes "root@$ip" true 2>/dev/null; then
+      return 0
+    fi
+    printf '.'; sleep 5
+  done
+  echo; die "Timed out waiting for SSH on $ip"
+}
+
+session_cost() {
+  local created="$1" rate="$2" now secs hours
+  now=$(date -u +%s); secs=$(( now - $(epoch_of "$created") ))
+  (( secs < 0 )) && secs=0
+  hours=$(awk -v s="$secs" 'BEGIN{printf "%.2f", s/3600}')
+  printf '%s|%s' "$hours" "$(awk -v h="$hours" -v r="$rate" 'BEGIN{printf "%.2f", h*r}')"
+}
+
+# Returns a SPACE-SEPARATED list of CIDRs allowed to SSH. "auto" resolves both
+# address families when the machine has them, because a laptop that reaches the
+# API over v6 may still SSH over v4 (or the other way round) and getting that
+# wrong locks you out of your own box.
+resolve_admin_cidr() {
+  if [[ "$ADMIN_CIDR" != "auto" ]]; then printf '%s' "$ADMIN_CIDR"; return; fi
+  local v4 v6 out=""
+  v4="$(my_public_ip4)"; v6="$(my_public_ip6)"
+  [[ -n "$v4" ]] && out="$v4/32"
+  [[ -n "$v6" ]] && out="${out:+$out }$v6/128"
+  [[ -n "$out" ]] || die "ADMIN_CIDR is 'auto' but your public IP could not be detected.
+     Set ADMIN_CIDR explicitly in config.env (e.g. \"1.2.3.4/32\")."
+  printf '%s' "$out"
+}
+
+# =====================================================================
+# up
+# =====================================================================
+cmd_up() {
+  local fresh=0 restore_from=""
+  while (( $# )); do
+    case "$1" in
+      --fresh) fresh=1 ;;
+      --from)  [[ $# -ge 2 ]] || die "--from needs an archive path"; restore_from="$2"; shift ;;
+      *) die "unknown flag for 'up': $1" ;;
+    esac
+    shift
+  done
+
+  load_token; ensure_ssh_key; ensure_credentials
+
+  state_exists && die "A server is already tracked (id $(state_get id), ip $(state_get ip)).
+     Use './ctfl status', or './ctfl down' to tear it down first."
+
+  [[ -d "$CHALLENGES_DIR" ]] || die "CHALLENGES_DIR does not exist: $CHALLENGES_DIR"
+  local nchal; nchal="$(static_challenges | wc -l | tr -d ' ')"
+  (( nchal > 0 )) || die "no static challenges found in $CHALLENGES_DIR"
+
+  local archive=""
+  if (( fresh )); then
+    log "--fresh: starting a brand new CTFd (no users, no solves)"
+  elif [[ -n "$restore_from" ]]; then
+    archive="$restore_from"; [[ -f "$archive" ]] || die "backup not found: $archive"
+  else
+    archive="$(latest_backup)"
+  fi
+  if [[ -n "$archive" ]]; then
+    tar tzf "$archive" >/dev/null 2>&1 || die "backup archive is corrupt: $archive"
+    log "Restoring $(basename "$archive")"
+  fi
+
+  local admin_cidr; admin_cidr="$(resolve_admin_cidr)"
+  local rate; rate="$(hourly_rate)"
+
+  step "Creating Linode  ($LINODE_TYPE, $LINODE_REGION, \$$rate/hr)"
+  local root_pass body resp id ip created
+  root_pass="$(rand_pw)Aa9%"
+  body="$(jq -n \
+    --arg region "$LINODE_REGION" --arg type "$LINODE_TYPE" --arg image "$LINODE_IMAGE" \
+    --arg label "${LINODE_LABEL}-$(date +%s)" --arg pass "$root_pass" \
+    --arg key "$(cat "${SSH_KEY}.pub")" \
+    '{region:$region,type:$type,image:$image,label:$label,
+      root_pass:$pass,authorized_keys:[$key],booted:true,
+      tags:["ctflite","ondemand"]}')"
+  resp="$(linode_api POST "/linode/instances" "$body")"
+  id="$(jq -r '.id' <<<"$resp")"; ip="$(jq -r '.ipv4[0]' <<<"$resp")"
+  created="$(jq -r '.created' <<<"$resp")"
+
+  # Persist immediately: if anything below fails we must never lose the id,
+  # or a billable Linode is orphaned.
+  state_write "$(jq -n --arg id "$id" --arg ip "$ip" --arg created "$created" \
+    --arg type "$LINODE_TYPE" --arg region "$LINODE_REGION" --arg rate "$rate" --arg rp "$root_pass" \
+    '{id:$id,ip:$ip,created:$created,type:$type,region:$region,hourly:$rate,root_pass:$rp}')"
+  ok "Linode $id created at $ip"
+  dim "state saved to state/current.json (keeps the id safe if anything below fails)"
+
+  step "Waiting for boot"
+  local deadline=$(( $(date +%s) + 300 )) status=""
+  while (( $(date +%s) < deadline )); do
+    status="$(linode_api GET "/linode/instances/$id" | jq -r '.status')"
+    [[ "$status" == "running" ]] && break
+    printf '.'; sleep 5
+  done
+  echo; [[ "$status" == "running" ]] || die "Linode never reached 'running' (status=$status)"
+  ok "running"
+
+  step "Waiting for SSH"; wait_for_ssh "$ip"; echo; ok "ssh up"
+
+  step "Uploading challenges ($nchal static) and the provisioner"
+  rsh "mkdir -p /opt/ctflite/challenges"
+  # COPYFILE_DISABLE stops macOS bsdtar embedding xattr headers GNU tar warns about.
+  COPYFILE_DISABLE=1 tar -C "$CHALLENGES_DIR" --no-xattrs --exclude _template --exclude '.DS_Store' --exclude WRITEUP.md -czf - . 2>/dev/null \
+    | rsh "tar -C /opt/ctflite/challenges -xzf -"
+  rcp "$ROOT_DIR/remote/provision.sh"  "root@$ip:/opt/ctflite/provision.sh"  >/dev/null
+  rcp "$ROOT_DIR/remote/gen_compose.py" "root@$ip:/opt/ctflite/gen_compose.py" >/dev/null
+  rcp "$ROOT_DIR/remote/ctfd_init.py"  "root@$ip:/opt/ctflite/ctfd_init.py"  >/dev/null
+  ok "uploaded"
+
+  local remote_archive=""
+  if [[ -n "$archive" ]]; then
+    step "Uploading backup ($(human_size "$(wc -c <"$archive")"))"
+    rcp "$archive" "root@$ip:/root/restore.tar.gz"
+    remote_archive="/root/restore.tar.gz"
+    ok "uploaded"
+  fi
+
+  step "Provisioning (Docker, CTFd $CTFD_VERSION, $nchal challenge images)"
+  dim "this takes ~6-10 min; live output follows"
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=30 "root@$ip" \
+    "EVENT_NAME='$EVENT_NAME' EVENT_DESC='$EVENT_DESC' \
+     CTF_USER_MODE='$CTF_USER_MODE' CTF_TEAM_SIZE='$CTF_TEAM_SIZE' \
+     CTFD_VERSION='$CTFD_VERSION' \
+     CTFD_ADMIN_USER='$CTFD_ADMIN_USER' CTFD_ADMIN_EMAIL='$CTFD_ADMIN_EMAIL' \
+     CTFD_ADMIN_PW='$CTFD_ADMIN_PW' CTFD_REGISTRATION_CODE='${CTFD_REGISTRATION_CODE:-}' \
+     CTFD_DB_PW='$CTFD_DB_PW' CTFD_DB_ROOT_PW='$CTFD_DB_ROOT_PW' CTFD_SECRET_KEY='$CTFD_SECRET_KEY' \
+     FLAG_PREFIX='$FLAG_PREFIX' HINT_COST='$HINT_COST' \
+     GATE_CHALLENGE='${GATE_CHALLENGE:-}' \
+     ADMIN_CIDR='$admin_cidr' PLAYER_CIDR='$PLAYER_CIDR' PUBLIC_HOST='$ip' \
+     RESTORE_ARCHIVE='$remote_archive' \
+     bash /opt/ctflite/provision.sh" \
+    || die "Provisioning failed. The Linode is STILL RUNNING (and billing) so you can debug:
+       ./ctfl ssh
+       cd /opt/ctflite/compose && docker compose -p ctfd logs --tail 50 ctfd
+     When done:  ./ctfl down   (backup + delete)   or   ./ctfl destroy  (delete, no backup)"
+
+  rsh "rm -f /root/restore.tar.gz" || true
+  state_set url "http://$ip"
+
+  step "${C_GRN}CTF is up${C_RST}"
+  printf '  scoreboard : %shttp://%s%s\n' "$C_B" "$ip" "$C_RST"
+  printf '  admin      : %s / %s\n' "$CTFD_ADMIN_USER" "$CTFD_ADMIN_PW"
+  printf '  challenges : %s static, on %s ports %s\n' "$nchal" "$ip" \
+         "$(static_challenges | while read -r d; do chal_field "$d/challenge.yml" published; done | sort -n | tr '\n' ' ')"
+  printf '  ssh open to: %s      players: %s\n' "$admin_cidr" "$PLAYER_CIDR"
+  printf '  burn rate  : $%s/hr  (~$%s per 8h event)\n' "$rate" \
+         "$(awk -v r="$rate" 'BEGIN{printf "%.2f", r*8}')"
+  if [[ -z "${CTFD_REGISTRATION_CODE:-}" ]]; then
+    printf '\n  %sRegistration is open to anyone with the URL.%s Set CTFD_REGISTRATION_CODE\n' "$C_YLW" "$C_RST"
+    printf '  in config.env (then ./ctfl register) before sharing it.\n'
+  fi
+  printf '\n  %sWhen the event is over, run ./ctfl down%s - that saves it and stops the billing.\n' "$C_YLW" "$C_RST"
+}
+
+# Re-run provisioning against the EXISTING Linode. Use after fixing a bug in
+# remote/provision.sh - avoids destroying and recreating a billing instance.
+cmd_reprovision() {
+  load_token; require_state; ensure_credentials
+  local ip; ip="$(state_get ip)"
+  local archive=""
+  if [[ "${1:-}" == "--from" ]]; then
+    archive="${2:-}"; [[ -f "$archive" ]] || die "backup not found: $archive"
+  fi
+  local admin_cidr; admin_cidr="$(resolve_admin_cidr)"
+  local nchal; nchal="$(static_challenges | wc -l | tr -d ' ')"
+
+  step "Re-provisioning Linode $(state_get id) at $ip"
+  rsh "mkdir -p /opt/ctflite/challenges && rm -rf /opt/ctflite/challenges/*"
+  COPYFILE_DISABLE=1 tar -C "$CHALLENGES_DIR" --no-xattrs --exclude _template --exclude '.DS_Store' --exclude WRITEUP.md -czf - . 2>/dev/null \
+    | rsh "tar -C /opt/ctflite/challenges -xzf -"
+  rcp "$ROOT_DIR/remote/provision.sh"   "root@$ip:/opt/ctflite/provision.sh"   >/dev/null
+  rcp "$ROOT_DIR/remote/gen_compose.py" "root@$ip:/opt/ctflite/gen_compose.py" >/dev/null
+  rcp "$ROOT_DIR/remote/ctfd_init.py"   "root@$ip:/opt/ctflite/ctfd_init.py"   >/dev/null
+
+  local remote_archive=""
+  if [[ -n "$archive" ]]; then
+    step "Uploading backup ($(human_size "$(wc -c <"$archive")"))"
+    rcp "$archive" "root@$ip:/root/restore.tar.gz"
+    remote_archive="/root/restore.tar.gz"
+  fi
+
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=30 "root@$ip" \
+    "EVENT_NAME='$EVENT_NAME' EVENT_DESC='$EVENT_DESC' \
+     CTF_USER_MODE='$CTF_USER_MODE' CTF_TEAM_SIZE='$CTF_TEAM_SIZE' \
+     CTFD_VERSION='$CTFD_VERSION' \
+     CTFD_ADMIN_USER='$CTFD_ADMIN_USER' CTFD_ADMIN_EMAIL='$CTFD_ADMIN_EMAIL' \
+     CTFD_ADMIN_PW='$CTFD_ADMIN_PW' CTFD_REGISTRATION_CODE='${CTFD_REGISTRATION_CODE:-}' \
+     CTFD_DB_PW='$CTFD_DB_PW' CTFD_DB_ROOT_PW='$CTFD_DB_ROOT_PW' CTFD_SECRET_KEY='$CTFD_SECRET_KEY' \
+     FLAG_PREFIX='$FLAG_PREFIX' HINT_COST='$HINT_COST' \
+     GATE_CHALLENGE='${GATE_CHALLENGE:-}' \
+     ADMIN_CIDR='$admin_cidr' PLAYER_CIDR='$PLAYER_CIDR' PUBLIC_HOST='$ip' \
+     RESTORE_ARCHIVE='$remote_archive' \
+     bash /opt/ctflite/provision.sh" \
+    || die "Re-provisioning failed. Linode still running: ./ctfl ssh"
+
+  rsh "rm -f /root/restore.tar.gz" || true
+  step "${C_GRN}CTF is up${C_RST}"
+  printf '  scoreboard : %shttp://%s%s\n' "$C_B" "$ip" "$C_RST"
+  printf '  admin      : %s / %s\n' "$CTFD_ADMIN_USER" "$CTFD_ADMIN_PW"
+  printf '  challenges : %s static\n' "$nchal"
+}
+
+# =====================================================================
+# backup  (also the first half of `down`)
+# =====================================================================
+do_backup() {
+  local stop_first="${1:-1}"
+  local ip; ip="$(state_get ip)"
+  local ts; ts="$(date +%Y%m%d-%H%M%S)"
+  local name="ctflite-${ts}"
+  local local_tar="$BACKUP_DIR/${name}.tar.gz"
+
+  if (( stop_first )); then
+    step "Stopping CTFd so nothing is mid-write"
+    dim "the database stays up - it is what we are about to dump"
+    rsh "cd /opt/ctflite/compose && docker compose -p ctfd stop ctfd" >/dev/null 2>&1 || warn "stop returned non-zero; continuing"
+    ok "CTFd stopped, database quiesced"
+  else
+    step "Snapshotting while the event runs (CTFd stays up)"
+  fi
+
+  step "Dumping the event on the server"
+  # --single-transaction gives a consistent snapshot without locking players
+  # out, which matters for `./ctfl backup` mid-event.
+  # shellcheck disable=SC2029
+  rsh "set -e
+       cd /opt/ctflite/compose
+       rm -rf /root/snap && mkdir -p /root/snap
+       docker compose -p ctfd exec -T db sh -c 'exec mysqldump -uroot -p\"\$MARIADB_ROOT_PASSWORD\" --single-transaction --quick ctfd' > /root/snap/ctfd-db.sql
+       test -s /root/snap/ctfd-db.sql
+       cp -a /opt/ctflite/data/CTFd/uploads /root/snap/uploads 2>/dev/null || mkdir -p /root/snap/uploads
+       cd /root/snap
+       tar czf /root/${name}.tar.gz .
+       stat -c %s /root/${name}.tar.gz > /root/${name}.size
+       sha256sum /root/${name}.tar.gz | awk '{print \$1}' > /root/${name}.sha"
+
+  local remote_sha remote_size
+  remote_sha="$(rsh "cat /root/${name}.sha")"
+  remote_size="$(rsh "cat /root/${name}.size")"
+  ok "archive built: $(human_size "$remote_size")  sha256 ${remote_sha:0:16}..."
+
+  step "Downloading to $BACKUP_DIR"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -h --progress -e "ssh ${SSH_OPTS[*]}" "root@$ip:/root/${name}.tar.gz" "$local_tar"
+  else
+    rcp "root@$ip:/root/${name}.tar.gz" "$local_tar"
+  fi
+
+  step "Verifying the download (nothing is deleted until all 4 checks pass)"
+  verify_archive "$local_tar" "$remote_sha" "$remote_size" \
+    || die "BACKUP VERIFICATION FAILED - the Linode has NOT been touched and is
+     still running (and still billing). Your event is safe on the server.
+     Retry with ./ctfl down, or grab it by hand with ./ctfl ssh."
+
+  local local_size; local_size="$(wc -c <"$local_tar" | tr -d ' ')"
+
+  step "Cleaning up the temp archive on the server"
+  rsh "rm -rf /root/snap /root/${name}.tar.gz /root/${name}.sha /root/${name}.size" || true
+
+  local users solves
+  users="$(rsh "cd /opt/ctflite/compose && docker compose -p ctfd exec -T db sh -c 'exec mysql -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"SELECT COUNT(*) FROM ctfd.users\"'" 2>/dev/null | tr -d '\r' || echo '?')"
+  solves="$(rsh "cd /opt/ctflite/compose && docker compose -p ctfd exec -T db sh -c 'exec mysql -uroot -p\"\$MARIADB_ROOT_PASSWORD\" -N -B -e \"SELECT COUNT(*) FROM ctfd.solves\"'" 2>/dev/null | tr -d '\r' || echo '?')"
+
+  jq -n \
+    --arg file "$(basename "$local_tar")" --arg sha "$remote_sha" --arg size "$local_size" \
+    --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ctfd "$CTFD_VERSION" \
+    --arg mode "$CTF_USER_MODE" --arg event "$EVENT_NAME" \
+    --arg users "${users:-?}" --arg solves "${solves:-?}" \
+    '{file:$file,sha256:$sha,bytes:($size|tonumber),created_utc:$when,
+      ctfd_version:$ctfd,user_mode:$mode,event:$event,
+      users:$users,solves:$solves}' \
+    > "${local_tar%.tar.gz}.json"
+
+  VERIFIED_ARCHIVE="$local_tar"
+
+  local n; n="$(ls -1t "$BACKUP_DIR"/ctflite-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')"
+  if (( n > BACKUP_KEEP )); then
+    ls -1t "$BACKUP_DIR"/ctflite-*.tar.gz | tail -n +$((BACKUP_KEEP+1)) | while read -r old; do
+      rm -f "$old" "${old%.tar.gz}.json"; dim "pruned $(basename "$old")"
+    done
+  fi
+
+  step "${C_GRN}Backup verified${C_RST}"
+  printf '  %s  (%s)\n' "$local_tar" "$(human_size "$local_size")"
+  printf '  %s user(s), %s solve(s)\n' "${users:-?}" "${solves:-?}"
+}
+
+cmd_backup() {
+  load_token; require_state; ensure_credentials
+  do_backup 0
+  ok "Server is still running. Run './ctfl down' when the event is finished."
+}
+
+# =====================================================================
+# down = backup + verify + destroy
+# =====================================================================
+cmd_down() {
+  load_token; require_state; ensure_credentials
+  local id ip created rate
+  id="$(state_get id)"; ip="$(state_get ip)"
+  created="$(state_get created)"; rate="$(state_get hourly)"
+  local cost hours; IFS='|' read -r hours cost <<<"$(session_cost "$created" "$rate")"
+
+  step "Tearing down Linode $id ($ip)"
+  printf '  uptime this session : %sh\n' "$hours"
+  printf '  approx cost         : $%s\n' "$cost"
+  echo
+  confirm "Save the event, download a verified backup, then DELETE the Linode?" \
+    || { warn "aborted - server left running and still billing"; exit 1; }
+
+  do_backup 1
+
+  step "Deleting the Linode"
+  dim "backup verified above, so the disk is now safe to discard"
+  linode_api DELETE "/linode/instances/$id" >/dev/null
+  ok "Linode $id deleted - billing has stopped"
+  mv "$STATE_FILE" "$STATE_DIR/last-session.json"
+
+  step "${C_GRN}Done${C_RST}"
+  printf '  session cost   : ~$%s (%sh)\n' "$cost" "$hours"
+  printf '  saved event    : %s\n' "$(basename "$VERIFIED_ARCHIVE")"
+  printf '  ongoing charge : $0.00  (nothing exists at Linode any more)\n'
+  printf '\n  Next time:  %s./ctfl up%s  - it restores this backup automatically.\n' "$C_B" "$C_RST"
+}
+
+# =====================================================================
+# misc
+# =====================================================================
+cmd_status() {
+  if ! state_exists; then
+    printf '%sNo server running.%s  Nothing is billing.\n\n' "$C_GRN" "$C_RST"
+    local lb; lb="$(latest_backup)"
+    if [[ -n "$lb" ]]; then
+      local m="${lb%.tar.gz}.json"
+      printf 'Latest backup : %s (%s)\n' "$(basename "$lb")" "$(human_size "$(wc -c <"$lb")")"
+      [[ -f "$m" ]] && printf 'Contains      : %s user(s), %s solve(s), taken %s\n' \
+        "$(jq -r '.users' "$m")" "$(jq -r '.solves' "$m")" "$(jq -r '.created_utc' "$m")"
+      printf 'Backups kept  : %s\n' "$(ls -1 "$BACKUP_DIR"/ctflite-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')"
+    else
+      printf 'No backups yet - "./ctfl up" will start a fresh event.\n'
+    fi
+    return 0
+  fi
+
+  load_token
+  local id ip created rate info status
+  id="$(state_get id)"; ip="$(state_get ip)"
+  created="$(state_get created)"; rate="$(state_get hourly)"
+  info="$(linode_api GET "/linode/instances/$id" 2>/dev/null || echo '{}')"
+  status="$(jq -r '.status // "unknown"' <<<"$info")"
+  local cost hours; IFS='|' read -r hours cost <<<"$(session_cost "$created" "$rate")"
+
+  printf '%sCTF is UP%s\n' "$C_YLW$C_B" "$C_RST"
+  printf '  linode id  : %s (%s)\n' "$id" "$status"
+  printf '  scoreboard : http://%s\n' "$ip"
+  printf '  uptime     : %sh\n' "$hours"
+  printf '  cost so far: ~$%s  (at $%s/hr)\n' "$cost" "$rate"
+  echo
+  printf '  %s\n' "$(curl -s -o /dev/null -w 'CTFd HTTP %{http_code}' -m 10 "http://$ip/" 2>/dev/null || echo 'CTFd unreachable')"
+  rsh "cd /opt/ctflite/compose && docker compose -p chal -f challenges.yml ps --format '  {{.Name}}  {{.Status}}'" 2>/dev/null || true
+}
+
+# Rebuild the challenge images and restart them, without recreating the box.
+cmd_challenges() {
+  load_token; require_state; ensure_credentials
+  local ip; ip="$(state_get ip)"
+  step "Re-uploading challenge sources"
+  rsh "rm -rf /opt/ctflite/challenges && mkdir -p /opt/ctflite/challenges"
+  COPYFILE_DISABLE=1 tar -C "$CHALLENGES_DIR" --no-xattrs --exclude _template --exclude '.DS_Store' --exclude WRITEUP.md -czf - . 2>/dev/null \
+    | rsh "tar -C /opt/ctflite/challenges -xzf -"
+  rcp "$ROOT_DIR/remote/gen_compose.py" "root@$ip:/opt/ctflite/gen_compose.py" >/dev/null
+  step "Rebuilding and restarting"
+  rsh "set -e
+       for d in /opt/ctflite/challenges/*/; do
+         n=\$(basename \"\$d\"); [ \"\$n\" = _template ] && continue
+         [ -f \"\$d/Dockerfile\" ] || continue
+         grep -qE '^type: *\"?dynamic' \"\$d/challenge.yml\" && continue
+         echo -n \"  \$n ... \"; docker build -q -t ctflite/\$n:latest \"\$d\" >/dev/null && echo built
+       done
+       python3 /opt/ctflite/gen_compose.py /opt/ctflite/challenges /opt/ctflite/secrets > /opt/ctflite/compose/challenges.yml
+       chmod 600 /opt/ctflite/compose/challenges.yml
+       cd /opt/ctflite/compose && docker compose -p chal -f challenges.yml down --remove-orphans >/dev/null 2>&1 || true
+       cd /opt/ctflite/compose && docker compose -p chal -f challenges.yml up -d --remove-orphans"
+  # Adding or removing a challenge changes the published ports, and ufw was set
+  # up at provision time. Without this, a new challenge is deployed but
+  # unreachable, and a removed one leaves its port open.
+  step "Syncing the firewall to the current challenge ports"
+  local ports=""
+  local d
+  for d in $(static_challenges); do
+    ports="$ports $(chal_field "$d/challenge.yml" published)/$(chal_field "$d/challenge.yml" protocol)"
+  done
+  rsh "set -e
+       for p in $ports; do
+         ufw allow from '$PLAYER_CIDR' to any port \"\${p%%/*}\" proto \"\${p##*/}\" >/dev/null
+       done
+       ufw status | grep -cE '^3[0-9]{4}/' | sed 's/^/  challenge ports allowed: /'"
+  ok "firewall synced"
+  cmd_register
+}
+
+# Re-sync CTFd's challenge objects with the challenge sources. No rebuild.
+cmd_register() {
+  load_token; require_state; ensure_credentials
+  local ip; ip="$(state_get ip)"
+  rcp "$ROOT_DIR/remote/ctfd_init.py" "root@$ip:/opt/ctflite/ctfd_init.py" >/dev/null
+  step "Syncing challenges into CTFd"
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTS[@]}" "root@$ip" \
+    "EVENT_NAME='$EVENT_NAME' EVENT_DESC='$EVENT_DESC' \
+     CTF_USER_MODE='$CTF_USER_MODE' CTF_TEAM_SIZE='$CTF_TEAM_SIZE' \
+     CTFD_ADMIN_USER='$CTFD_ADMIN_USER' CTFD_ADMIN_EMAIL='$CTFD_ADMIN_EMAIL' \
+     CTFD_ADMIN_PW='$CTFD_ADMIN_PW' CTFD_REGISTRATION_CODE='${CTFD_REGISTRATION_CODE:-}' \
+     FLAG_PREFIX='$FLAG_PREFIX' HINT_COST='$HINT_COST' \
+     GATE_CHALLENGE='${GATE_CHALLENGE:-}' \
+     PUBLIC_HOST='$ip' ALREADY_SETUP=1 \
+     python3 /opt/ctflite/ctfd_init.py /opt/ctflite/challenges"
+  ok "CTFd in sync with $CHALLENGES_DIR"
+}
+
+# Wipe the RESULTS of an event while keeping everything you configured.
+#
+# Deliberately explicit SQL rather than CTFd's own /admin/reset: that endpoint's
+# "accounts" checkbox is all-or-nothing about users, and losing the admin row
+# would lock you out of the box you are standing on. Here the admin survives by
+# construction, and challenges/pages/config are never touched.
+# Wipe the RESULTS of an event while keeping everything you configured.
+#
+# Deliberately explicit SQL rather than CTFd's own /admin/reset: that endpoint's
+# "accounts" option is all-or-nothing about users, and losing the admin row
+# would lock you out of the box you are standing on. Here the admin survives by
+# construction, and challenges / pages / config are never touched.
+cmd_reset() {
+  load_token; require_state; ensure_credentials
+  local ip; ip="$(state_get ip)"
+
+  step "Reset event results on $ip"
+  printf '  KEEPS : challenges, flags, hints, pages (your homepage), CTF name,\n'
+  printf '          appearance, uploads, and the %s admin account\n' "$CTFD_ADMIN_USER"
+  printf '  WIPES : every other account, all teams, solves, wrong submissions,\n'
+  printf '          awards, hint unlocks and tracking\n'
+  echo
+  confirm "This cannot be undone. Wipe all results?" || { warn "aborted - nothing changed"; return 1; }
+
+  # Foreign key checks stay ON: switching them off stops every ON DELETE CASCADE
+  # from firing and quietly leaves orphaned rows behind. So the tables are
+  # deleted in dependency order, and the schema is asked which of them this
+  # CTFd version actually has rather than guessing and failing on a missing one.
+  local MYQ="cd /opt/ctflite/compose && docker compose -p ctfd exec -T db mysql -uroot -p'$CTFD_DB_ROOT_PW' -N -B ctfd -e"
+  local want="solves submissions awards unlocks tracking notifications comments field_entries tokens"
+  local have t list="" sql=""
+  have=" $(rsh "$MYQ \"SELECT table_name FROM information_schema.tables WHERE table_schema='ctfd'\"" 2>/dev/null | tr -d '\r' | tr '\n' ' ') "
+  for t in $want; do
+    case "$have" in *" $t "*) sql="$sql DELETE FROM $t;"; list="$list $t";; esac
+  done
+  sql="$sql UPDATE users SET team_id=NULL; DELETE FROM teams; DELETE FROM users WHERE type <> 'admin';"
+  dim "clearing:$list, teams, non-admin users"
+
+  rsh "cd /opt/ctflite/compose && docker compose -p ctfd exec -T db mysql -uroot -p'$CTFD_DB_ROOT_PW' ctfd -e \"$sql\"" \
+    || die "reset failed - inspect with ./ctfl ssh before assuming anything about the state"
+
+  step "After"
+  rsh "$MYQ \"SELECT CONCAT('  users       ', COUNT(*)) FROM users UNION ALL SELECT CONCAT('  teams       ', COUNT(*)) FROM teams UNION ALL SELECT CONCAT('  solves      ', COUNT(*)) FROM solves UNION ALL SELECT CONCAT('  submissions ', COUNT(*)) FROM submissions UNION ALL SELECT CONCAT('  challenges  ', COUNT(*)) FROM challenges UNION ALL SELECT CONCAT('  pages       ', COUNT(*)) FROM pages\"" 2>/dev/null
+
+  # CTFd caches the scoreboard in Redis; without this the old standings linger.
+  step "Clearing the cached scoreboard"
+  rsh "cd /opt/ctflite/compose && docker compose -p ctfd exec -T cache redis-cli FLUSHALL" >/dev/null 2>&1 || true
+  rsh "cd /opt/ctflite/compose && docker compose -p ctfd restart ctfd" >/dev/null 2>&1 || true
+  ok "scoreboard cache cleared, CTFd restarted"
+  printf '\n  %sFresh event ready at http://%s%s\n' "$C_GRN" "$ip" "$C_RST"
+}
+
+# Per-player accuracy. CTFd records every wrong guess in `submissions` but
+# never shows the ratio anywhere in the UI - so a team that reasoned its way
+# to a flag and a team that brute-forced the submit box look identical on the
+# scoreboard. This separates them.
+cmd_accuracy() {
+  load_token; require_state; ensure_credentials
+  local MYQ="cd /opt/ctflite/compose && docker compose -p ctfd exec -T db mysql -uroot -p'$CTFD_DB_ROOT_PW' -N -B ctfd -e"
+
+  step "Player accuracy"
+  printf '  %-20s %7s %9s %9s  %s\n' NAME SOLVED ATTEMPTS ACCURACY BAR
+  rsh "$MYQ \"SELECT u.name, SUM(s.type='correct'), COUNT(*), ROUND(100.0*SUM(s.type='correct')/COUNT(*),1) FROM submissions s JOIN users u ON u.id=s.user_id WHERE u.type<>'admin' GROUP BY u.id ORDER BY 2 DESC, 4 DESC\"" 2>/dev/null \
+   | awk -F'\t' '{n=int($4/10); bar=""; for(i=0;i<n;i++) bar=bar "#"; printf "  %-20s %7s %9s %8s%%  %s\n",$1,$2,$3,$4,bar}'
+
+  step "Hardest challenges (lowest first-try rate)"
+  printf '  %-24s %7s %9s %9s\n' CHALLENGE SOLVED ATTEMPTS ACCURACY
+  rsh "$MYQ \"SELECT c.name, SUM(s.type='correct'), COUNT(*), ROUND(100.0*SUM(s.type='correct')/COUNT(*),1) FROM submissions s JOIN challenges c ON c.id=s.challenge_id GROUP BY c.id ORDER BY 4 ASC\"" 2>/dev/null \
+   | awk -F'\t' '{printf "  %-24s %7s %9s %8s%%\n",$1,$2,$3,$4}'
+
+  step "Totals"
+  rsh "$MYQ \"SELECT CONCAT('  submissions  ', COUNT(*)) FROM submissions UNION ALL SELECT CONCAT('  correct      ', COUNT(*)) FROM submissions WHERE type='correct' UNION ALL SELECT CONCAT('  overall      ', ROUND(100.0*SUM(type='correct')/COUNT(*),1), '%') FROM submissions\"" 2>/dev/null
+}
+
+cmd_ssh()  { require_state; ssh "${SSH_OPTS[@]}" -t "root@$(state_get ip)" "${@:-bash -l}"; }
+cmd_logs() {
+  require_state
+  rsh "cd /opt/ctflite/compose && docker compose -p ctfd logs --tail ${1:-80} -f ctfd"
+}
+
+cmd_backups() {
+  printf '%-30s %10s  %6s %7s  %s\n' "ARCHIVE" "SIZE" "USERS" "SOLVES" "CREATED"
+  local f m
+  for f in $(ls -1t "$BACKUP_DIR"/ctflite-*.tar.gz 2>/dev/null); do
+    m="${f%.tar.gz}.json"
+    printf '%-30s %10s  %6s %7s  %s\n' \
+      "$(basename "$f")" "$(human_size "$(wc -c <"$f")")" \
+      "$([[ -f "$m" ]] && jq -r '.users'  "$m" || echo '?')" \
+      "$([[ -f "$m" ]] && jq -r '.solves' "$m" || echo '?')" \
+      "$([[ -f "$m" ]] && jq -r '.created_utc' "$m" || echo '?')"
+  done
+  [[ -n "$(latest_backup)" ]] || echo "(none yet)"
+}
+
+cmd_regions() {
+  load_token
+  linode_api GET "/regions" | jq -r '.data[] | select(.status=="ok") | "\(.id)\t\(.label)"' | column -t -s $'\t'
+}
+
+cmd_destroy() {
+  load_token; require_state
+  local id; id="$(state_get id)"
+  warn "This deletes Linode $id WITHOUT taking a backup. Users, solves and scores will be gone."
+  confirm "Really destroy without a backup?" || { log "aborted"; exit 1; }
+  linode_api DELETE "/linode/instances/$id" >/dev/null
+  rm -f "$STATE_FILE"
+  ok "Linode $id deleted (no backup taken)"
+}
+
+cmd_orphans() {
+  load_token
+  local out
+  out="$(linode_api GET "/linode/instances" \
+        | jq -r '.data[] | select(.tags|index("ctflite")) | "\(.id)\t\(.label)\t\(.ipv4[0])\t\(.status)\t\(.created)"')"
+  if [[ -z "$out" ]]; then
+    ok "No ctflite Linodes exist in your account. Nothing is billing."
+  else
+    warn "These tagged Linodes exist and ARE billing:"
+    printf '%s\n' "$out" | column -t -s $'\t'
+    echo
+    dim "Delete one with:  ./ctfl down  (saves it first)  or  ./ctfl destroy"
+  fi
+}
+
+# Verify everything `up` depends on WITHOUT creating anything. Free.
+cmd_preflight() {
+  local fail=0
+
+  step "1. Local tooling"
+  for t in curl jq ssh scp tar python3; do
+    if command -v "$t" >/dev/null 2>&1; then ok "$t"; else warn "$t MISSING"; fail=1; fi
+  done
+
+  step "2. Challenge definitions in $CHALLENGES_DIR"
+  if [[ ! -d "$CHALLENGES_DIR" ]]; then
+    warn "directory does not exist"; fail=1
+  else
+    local n=0 ports="" d f name pub flag
+    while read -r d; do
+      [[ -z "$d" ]] && continue
+      f="$d/challenge.yml"; name="$(chal_field "$f" name)"
+      pub="$(chal_field "$f" published)"; flag="$(chal_field "$f" flag)"
+      [[ -f "$d/Dockerfile" ]] || { warn "$name: no Dockerfile"; fail=1; }
+      [[ -n "$flag" ]] || { warn "$name: no flag"; fail=1; }
+      [[ "$name" == "$(basename "$d")" ]] || { warn "$name: name != directory"; fail=1; }
+      case " $ports " in *" $pub "*) warn "port $pub used twice"; fail=1;; esac
+      ports="$ports $pub"; n=$((n+1))
+    done <<< "$(static_challenges)"
+    ok "$n static challenge(s), ports:$ports"
+    dim "dynamic challenges are skipped - this build has no ctfd-whale"
+  fi
+
+  step "3. CTFd image tag"
+  if curl -sSf -m 20 "https://hub.docker.com/v2/repositories/ctfd/ctfd/tags/${CTFD_VERSION}" >/dev/null 2>&1; then
+    ok "ctfd/ctfd:${CTFD_VERSION} exists"
+  else
+    warn "ctfd/ctfd:${CTFD_VERSION} not found on Docker Hub"; fail=1
+  fi
+
+  step "4. Your public IP (for ADMIN_CIDR)"
+  if [[ "$ADMIN_CIDR" == "auto" ]]; then
+    local v4 v6
+    v4="$(my_public_ip4)"; v6="$(my_public_ip6)"
+    [[ -n "$v4" ]] && ok "IPv4 $v4 -> ssh allowed from $v4/32"
+    [[ -n "$v6" ]] && ok "IPv6 $v6 -> ssh allowed from $v6/128"
+    if [[ -z "$v4$v6" ]]; then warn "could not detect your IP; set ADMIN_CIDR explicitly"; fail=1; fi
+    [[ -z "$v4" && -n "$v6" ]] && dim "no IPv4 detected - if your SSH goes out over v4 you will be locked out; pin ADMIN_CIDR by hand"
+  else
+    ok "pinned to $ADMIN_CIDR"
+  fi
+  if [[ "$PLAYER_CIDR" == "0.0.0.0/0" ]]; then
+    dim "PLAYER_CIDR is the whole internet - fine for a real event, tighten it while building"
+  else
+    ok "players restricted to $PLAYER_CIDR"
+  fi
+
+  step "5. Linode credentials + plan"
+  load_token
+  ok "token loaded from $TOKEN_SRC"
+  local acct; acct="$(linode_api GET "/profile" | jq -r '.username // "?"')"
+  ok "token valid (user: $acct)"
+  local t; t="$(linode_api GET "/linode/types/${LINODE_TYPE}")"
+  ok "plan $(jq -r '.label' <<<"$t"): $(jq -r '.memory/1024' <<<"$t")GB, $(jq -r '.vcpus' <<<"$t") vCPU, \$$(jq -r '.price.hourly' <<<"$t")/hr"
+  if linode_api GET "/regions/${LINODE_REGION}" >/dev/null 2>&1; then ok "region $LINODE_REGION valid"
+  else warn "region $LINODE_REGION invalid (see ./ctfl regions)"; fail=1; fi
+  local running
+  running="$(linode_api GET "/linode/instances" | jq -r '[.data[]|select(.tags|index("ctflite"))]|length')"
+  if [[ "$running" == "0" ]]; then ok "no ctflite Linodes currently billing"
+  else warn "$running ctflite Linode(s) already exist - see ./ctfl orphans"; fi
+
+  echo
+  (( fail )) && die "pre-flight found problems (listed above)"
+  step "${C_GRN}Pre-flight clean - ./ctfl up should succeed${C_RST}"
+}
+
+cmd_help() {
+cat <<'HELP'
+ctfl - on-demand single-box CTF on Linode (CTFd + static challenges, one host)
+
+  ./ctfl up [--fresh] [--from <archive>]
+        Create a Linode, install Docker + CTFd, build and run every static
+        challenge, restore your most recent verified backup (or start fresh),
+        and register all challenges in CTFd with flags and hints.
+
+  ./ctfl down
+        Stop CTFd, dump the database and uploads, download the archive, run 4
+        verification checks, and only then DELETE the Linode. This is the
+        command that stops all charges.
+
+  ./ctfl reprovision [--from <archive>]
+        Re-run provisioning on the EXISTING box (after fixing a provisioning
+        bug) instead of destroying and recreating a billing Linode.
+
+  ./ctfl preflight    Verify tooling, challenges, CTFd tag, token and plan
+                      WITHOUT creating anything. Free. Run it first.
+
+  ./ctfl challenges   Rebuild the challenge images on the running box and
+                      re-sync CTFd. Use after editing a challenge.
+  ./ctfl register     Re-sync CTFd only (descriptions, points, hints, flags).
+
+  ./ctfl reset        Wipe every account, solve and submission, keeping your
+                      challenges, pages, homepage, CTF name and settings.
+                      Use between events to start a clean scoreboard.
+
+  ./ctfl accuracy     Per-player solve accuracy (solves vs total submissions)
+                      and which challenges players struggled with most.
+
+  ./ctfl backup       Snapshot + download mid-event; the box keeps running.
+  ./ctfl status       Is it up, for how long, what has it cost, what is running.
+  ./ctfl logs [n]     Tail the CTFd log.
+  ./ctfl ssh          Shell on the box.
+  ./ctfl backups      List local backups with their user/solve counts.
+  ./ctfl regions      List Linode regions.
+  ./ctfl orphans      Audit: any ctflite Linode still billing anywhere?
+  ./ctfl destroy      Delete the Linode WITHOUT a backup (dangerous).
+
+Billing note: a powered-off Linode still bills, because its disk is still
+allocated. Only deletion stops it, which is why 'down' deletes rather than
+shuts down - and why it refuses to delete until the backup verifies.
+HELP
+}
+
+# =====================================================================
+case "${1:-help}" in
+  up)         shift; cmd_up "$@" ;;
+  reprovision) shift; cmd_reprovision "$@" ;;
+  down)       shift; cmd_down "$@" ;;
+  backup)     shift; cmd_backup "$@" ;;
+  preflight)  shift; cmd_preflight "$@" ;;
+  challenges) shift; cmd_challenges "$@" ;;
+  register)   shift; cmd_register "$@" ;;
+  reset)      shift; cmd_reset "$@" ;;
+  accuracy)   shift; cmd_accuracy "$@" ;;
+  status)     shift; cmd_status "$@" ;;
+  logs)       shift; cmd_logs "$@" ;;
+  ssh)        shift; cmd_ssh "$@" ;;
+  backups)    shift; cmd_backups "$@" ;;
+  regions)    shift; cmd_regions "$@" ;;
+  orphans)    shift; cmd_orphans "$@" ;;
+  destroy)    shift; cmd_destroy "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *) die "unknown command '$1'  (try ./ctfl help)" ;;
+esac

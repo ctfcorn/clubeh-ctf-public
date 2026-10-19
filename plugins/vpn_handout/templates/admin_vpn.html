@@ -1,0 +1,43 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="jumbotron">
+  <div class="container">
+    <h1>VPN Profile Allocation</h1>
+    <h3 class="text-muted">{{ assigned }} of {{ total }} assigned</h3>
+  </div>
+</div>
+<div class="container-fluid">
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>#</th><th>Profile</th><th>VPN IP</th><th>User</th><th>Assigned (UTC)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.id }}</td>
+        <td><code>{{ row.filename }}</code></td>
+        <td><code>{{ row.vpn_ip }}</code></td>
+        <td>
+          {% if row.user_id and users.get(row.user_id) %}
+            <a href="/admin/users/{{ row.user_id }}">{{ users[row.user_id].name }}</a>
+          {% elif row.user_id %}
+            <span class="text-muted">user {{ row.user_id }} (deleted)</span>
+          {% else %}
+            <span class="text-muted">unassigned</span>
+          {% endif %}
+        </td>
+        <td>{{ row.assigned_at or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="text-muted">
+    To revoke a player mid-event, run <code>./ctf_manager.sh</code> &rarr;
+    <strong>[4] Revoke Player</strong> with the profile name shown above.
+    The CRL is regenerated and pushed to the gateway, and the certificate stops
+    working on its next handshake.
+  </p>
+</div>
+{% endblock %}

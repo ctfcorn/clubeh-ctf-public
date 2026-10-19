@@ -1,0 +1,14 @@
+name: example-web
+port: 8080
+published: 30001
+protocol: tcp
+flag: "clubeh{page_source!}"
+flag_mode: "0444"
+replicas: 1
+cpus: "0.25"
+memory: "128M"
+pids: 64
+read_only: "true"
+caps: ""
+category: Web
+points: 50

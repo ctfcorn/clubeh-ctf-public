@@ -1,0 +1,84 @@
+<!--
+  club.eh CTF - custom decoders
+  Install on the Wazuh MANAGER (node 4) at /var/ossec/etc/decoders/local_decoder.xml
+
+  Formats below were taken from a running CTFd 3.8.7, not from documentation:
+
+    logins.log        [10/09/2026 04:31:20] 75.159.128.39 - ctf-admin logged in
+    registrations.log [10/09/2026 04:35:22] 75.159.128.39 - alice registered with a@b.c
+    submissions.log   [10/09/2026 04:38:53] alice submitted b'clubeh{x}' on 11 with kpm 0 [WRONG]
+
+  Note submissions.log has NO source IP and the flag is a python bytes repr.
+-->
+
+<!--
+  Standalone decoders, not parent/child. Sibling children under one parent
+  proved unreliable with PCRE2 + offset="after_parent": the parent matched and
+  no child ever fired. Each decoder below anchors on the whole line instead,
+  so there is no ordering or offset subtlety.
+-->
+<decoder name="ctfd-login">
+  <prematch type="pcre2">^\[[^\]]+\] \S+ - \S+ logged in</prematch>
+  <regex type="pcre2">^\[[^\]]+\] (\S+) - (\S+) logged in</regex>
+  <order>srcip, user</order>
+</decoder>
+
+<decoder name="ctfd-register">
+  <prematch type="pcre2">^\[[^\]]+\] \S+ - \S+ registered with </prematch>
+  <regex type="pcre2">^\[[^\]]+\] (\S+) - (\S+) registered with (\S+)</regex>
+  <order>srcip, user, data</order>
+</decoder>
+
+<decoder name="ctfd-submission">
+  <prematch type="pcre2">^\[[^\]]+\] \S+ submitted .* with kpm </prematch>
+  <regex type="pcre2">^\[[^\]]+\] (\S+) submitted .* on (\d+) with kpm (\d+) \[(\w+)\]</regex>
+  <order>user, id, extra_data, status</order>
+</decoder>
+
+<!--
+  VPN handout plugin audit log, written inside the CTFd container to
+  /var/log/CTFd/vpn_handout.log -> on the host /opt/ctf/data/CTFd/logs/.
+-->
+<decoder name="ctf-vpn-handout">
+  <prematch type="pcre2">vpn_handout </prematch>
+  <regex type="pcre2">user=(\S+) \S+ action=(\S+) profile=(\S+)</regex>
+  <order>user, action, data</order>
+</decoder>
+
+<!--
+  Gateway VPN session events. ovpn-connect.sh / ovpn-disconnect.sh use
+  `logger -t ctf-vpn -p auth.notice`, so these arrive via auth.log with
+  program_name "ctf-vpn":
+
+    ctf-vpn: VPN_CONNECT cn=player03 vpn_ip=10.8.0.103 src=203.0.113.9:51820
+    ctf-vpn: VPN_DISCONNECT cn=player03 vpn_ip=10.8.0.103 rx=1234 tx=5678
+-->
+<decoder name="ctf-vpn-session">
+  <program_name>ctf-vpn</program_name>
+</decoder>
+
+<decoder name="ctf-vpn-connect">
+  <parent>ctf-vpn-session</parent>
+  <regex type="pcre2">^VPN_CONNECT cn=(\S+) vpn_ip=(\S+) src=([\d.]+)</regex>
+  <order>user, data, srcip</order>
+</decoder>
+
+<decoder name="ctf-vpn-disconnect">
+  <parent>ctf-vpn-session</parent>
+  <regex type="pcre2">^VPN_DISCONNECT cn=(\S+) vpn_ip=(\S+)</regex>
+  <order>user, data</order>
+</decoder>
+
+<!--
+  nftables logged drops arrive as kernel messages, and Wazuh's BUILT-IN
+  `kernel` decoder claims them first - a standalone decoder here never ran.
+  Declaring kernel as the parent makes this run after it.
+
+    ctf-drop NOT_YOUR_INSTANCE IN=tun0 OUT=eth0 SRC=10.8.0.120 DST=10.0.0.3 ...
+-->
+<decoder name="ctf-nft-drop">
+  <parent>kernel</parent>
+  <prematch type="pcre2">ctf-drop </prematch>
+  <regex type="pcre2">ctf-drop (\w+) .*SRC=(\S+) DST=(\S+)</regex>
+  <order>action, srcip, dstip</order>
+</decoder>

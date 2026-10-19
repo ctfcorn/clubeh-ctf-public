@@ -1,0 +1,212 @@
+<!--
+  club.eh CTF - custom rules
+  Install on the Wazuh MANAGER (node 4) at /var/ossec/etc/rules/local_rules.xml
+
+  Rule id space 100100-100199 (100000+ is the user range).
+  Levels:  3 informational | 7 notable | 10 suspicious | 12 investigate now
+           14 near-certain compromise
+-->
+
+<group name="ctf,ctfd,">
+
+  <!-- ===================== CTFd application ===================== -->
+
+  <rule id="100100" level="3">
+    <decoded_as>ctfd-login</decoded_as>
+    <description>CTFd: $(dstuser) logged in from $(srcip)</description>
+    <group>authentication_success,</group>
+  </rule>
+
+
+
+  <!-- The admin account logging in is always worth seeing. If you did not do
+       this, someone else has your password. -->
+  <rule id="100102" level="10">
+    <if_sid>100101</if_sid>
+    <user>ctf-admin</user>
+    <description>CTFd: ADMIN login from $(srcip)</description>
+    <group>authentication_success,admin_login,</group>
+  </rule>
+
+  <rule id="100103" level="3">
+    <decoded_as>ctfd-register</decoded_as>
+    <description>CTFd: new account $(dstuser) registered from $(srcip)</description>
+    <group>account_created,</group>
+  </rule>
+
+  <!-- Mass registration from one address: either a scripted sign-up or one
+       person farming accounts to multiply hint budgets. -->
+  <rule id="100104" level="10" frequency="8" timeframe="120">
+    <if_matched_sid>100103</if_matched_sid>
+    <same_srcip />
+    <description>CTFd: 8+ accounts registered from $(srcip) in 2 minutes</description>
+    <group>account_created,bulk_registration,</group>
+  </rule>
+
+  <rule id="100110" level="3">
+    <decoded_as>ctfd-submission</decoded_as>
+    <status>CORRECT</status>
+    <description>CTFd: $(dstuser) solved challenge $(id)</description>
+    <group>ctf_solve,</group>
+  </rule>
+
+  <rule id="100111" level="3">
+    <decoded_as>ctfd-submission</decoded_as>
+    <status>WRONG</status>
+    <description>CTFd: $(dstuser) submitted a wrong flag for challenge $(id)</description>
+    <group>ctf_wrong,</group>
+  </rule>
+
+  <!-- Flag brute force. A thinking player submits a handful of wrong flags;
+       20 in 60s is a script walking a wordlist at the submit endpoint. -->
+  <rule id="100112" level="10" frequency="20" timeframe="60">
+    <if_matched_sid>100111</if_matched_sid>
+    <same_user />
+    <description>CTFd: $(dstuser) submitted 20+ wrong flags in 60s - flag brute force</description>
+    <group>ctf_bruteforce,</group>
+  </rule>
+
+  <rule id="100113" level="12" frequency="60" timeframe="120">
+    <if_matched_sid>100111</if_matched_sid>
+    <same_user />
+    <description>CTFd: $(dstuser) sustained flag brute force (60+ wrong in 2 min)</description>
+    <group>ctf_bruteforce,</group>
+  </rule>
+
+  <!-- ===================== VPN ===================== -->
+
+  <rule id="100120" level="3">
+    <decoded_as>ctf-vpn-session</decoded_as>
+    <description>VPN: session event</description>
+    <group>vpn,</group>
+  </rule>
+
+  <rule id="100123" level="3">
+    <if_sid>100120</if_sid>
+    <regex>^VPN_CONNECT</regex>
+    <description>VPN: $(dstuser) connected from $(srcip) as $(data)</description>
+    <group>vpn,vpn_connect,</group>
+  </rule>
+
+  <rule id="100124" level="3">
+    <if_sid>100120</if_sid>
+    <regex>^VPN_DISCONNECT</regex>
+    <description>VPN: $(dstuser) disconnected</description>
+    <group>vpn,vpn_disconnect,</group>
+  </rule>
+
+  <!-- One certificate, several public addresses in a short window: either the
+       player is roaming, or the profile has been shared/stolen. ccd pins the
+       tunnel IP, so this is the only place sharing shows up. -->
+  <rule id="100121" level="10" frequency="3" timeframe="600">
+    <if_matched_sid>100123</if_matched_sid>
+    <same_user />
+    <different_srcip />
+    <description>VPN: certificate $(dstuser) used from 3+ source IPs in 10 min - shared profile?</description>
+    <group>vpn,credential_sharing,</group>
+  </rule>
+
+  <rule id="100122" level="7">
+    <decoded_as>ctf-vpn-handout</decoded_as>
+    <description>CTFd: VPN profile $(data) handed to $(dstuser) ($(action))</description>
+    <group>vpn,handout,</group>
+  </rule>
+
+  <!-- ===================== Network policy violations ===================== -->
+
+  <rule id="100130" level="5">
+    <decoded_as>kernel</decoded_as>
+    <match>ctf-drop </match>
+    <description>Firewall: dropped packet ($(action)) $(srcip) -> $(dstip)</description>
+    <group>firewall_drop,</group>
+  </rule>
+
+  <!-- Per-team isolation: a player reaching for an instance that is not
+       theirs. One is a mistake; a burst is scanning. -->
+  <rule id="100131" level="7">
+    <if_sid>100130</if_sid>
+    <action>NOT_YOUR_INSTANCE</action>
+    <description>Isolation: $(srcip) tried to reach another team's instance</description>
+    <group>firewall_drop,isolation_violation,</group>
+  </rule>
+
+  <rule id="100132" level="12" frequency="15" timeframe="60">
+    <if_matched_sid>100131</if_matched_sid>
+    <same_srcip />
+    <description>Isolation: $(srcip) swept 15+ instance ports in 60s - scanning other teams</description>
+    <group>firewall_drop,isolation_violation,recon,</group>
+  </rule>
+
+  <!-- INVARIANT 4: the challenge host has no route to the internet. If it is
+       trying, something inside a container is calling home. This should never
+       fire. -->
+  <rule id="100133" level="14">
+    <if_sid>100130</if_sid>
+    <action>CHAL_EGRESS</action>
+    <description>CRITICAL: challenge host attempted outbound internet to $(dstip) - possible container escape</description>
+    <group>container_escape,egress,</group>
+  </rule>
+
+  <!-- INVARIANT 3: cloud metadata is blocked for containers and VPN clients.
+       An attempt is someone hunting for Linode credentials. -->
+  <rule id="100134" level="14">
+    <if_sid>100130</if_sid>
+    <action>METADATA</action>
+    <description>CRITICAL: $(srcip) tried to reach cloud metadata 169.254.169.254</description>
+    <group>container_escape,credential_access,</group>
+  </rule>
+
+  <!-- ===================== Host / SSH ===================== -->
+
+  <!-- SSH is firewalled to the admin IP, so a successful login that is not you
+       means the allow-list or a key has been compromised. -->
+  <rule id="100140" level="12">
+    <if_sid>5715</if_sid>
+    <description>SSH: accepted login on a CTF node from $(srcip) - verify this was you</description>
+    <group>authentication_success,ssh,</group>
+  </rule>
+
+  <rule id="100141" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>5710</if_matched_sid>
+    <same_srcip />
+    <description>SSH: repeated failed logins from $(srcip) despite the firewall allow-list</description>
+    <group>authentication_failures,ssh,</group>
+  </rule>
+
+  <!-- ===================== Docker / challenge services ===================== -->
+
+  <!-- Tagged by the agent's own command localfile, so this matches regardless
+       of how Wazuh wraps command output - no dependence on a stock rule id. -->
+  <rule id="100150" level="3">
+    <match>ctf-docker-event</match>
+    <description>Docker: container/service lifecycle event on a CTF node</description>
+    <group>docker,</group>
+  </rule>
+
+  <rule id="100151" level="7">
+    <if_sid>100150</if_sid>
+    <match>ctf-docker-event die|ctf-docker-event kill|ctf-docker-event oom</match>
+    <description>Docker: a challenge container died or was killed</description>
+    <group>docker,</group>
+  </rule>
+
+  <!-- A challenge that keeps dying is either broken or being exploited into
+       crashing; during an event you want to know within a minute. -->
+  <rule id="100152" level="10" frequency="6" timeframe="300">
+    <if_matched_sid>100151</if_matched_sid>
+    <description>Docker: challenge containers died 6+ times in 5 min - crash loop or active exploitation</description>
+    <group>docker,crash_loop,</group>
+  </rule>
+
+  <!-- ===================== File integrity ===================== -->
+
+  <!-- Anything writing to the flag secrets or the compose stack outside a
+       deploy is tampering. -->
+  <rule id="100160" level="12">
+    <if_sid>550,554</if_sid>
+    <field name="file">/opt/ctf/stack|/run/secrets</field>
+    <description>FIM: CTF flag/stack path modified outside a deployment</description>
+    <group>syscheck,tampering,</group>
+  </rule>
+
+</group>

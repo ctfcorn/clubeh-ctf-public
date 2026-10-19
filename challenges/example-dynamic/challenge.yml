@@ -1,0 +1,11 @@
+name: example-dynamic
+type: dynamic
+port: 9000
+protocol: tcp
+category: misc
+points: 100
+description: "A door with a password. Press Start to get your own copy; the flag is unique to your instance. Connect with nc."
+redirect: direct
+cpus: "0.25"
+memory: "64M"
+hidden: true

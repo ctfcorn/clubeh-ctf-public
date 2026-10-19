@@ -1,0 +1,9 @@
+personal_access_token.txt
+pki/
+profiles/
+ctf_state.json
+ctf_secrets.env
+.ssh_known_hosts
+archive/
+.DS_Store
+wazuh-evidence-*/

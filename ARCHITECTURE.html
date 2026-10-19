@@ -1,0 +1,495 @@
+<title>club.eh CTF Range</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F2F5F3; --panel:#FFFFFF; --panel2:#E7ECEA; --ink:#16211D; --muted:#5C6B66; --line:#C5CFCB; --line2:#9BA9A4;
+  --player:#0B7A67; --admin:#A35F00; --deny:#B33A2C; --boot:#3E5C86; --neutral:#6B7A75;
+  --player-bg:#DDEFEA; --admin-bg:#F5E9D3; --deny-bg:#F6DDD9; --boot-bg:#DCE5F1;
+  --sans:"Instrument Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E1513; --panel:#16201D; --panel2:#1E2A26; --ink:#E6EDEA; --muted:#93A39D; --line:#33423D; --line2:#4E605A;
+    --player:#3FBFA6; --admin:#E0A23A; --deny:#E86B5C; --boot:#7FA3D4; --neutral:#8E9C97;
+    --player-bg:#123A33; --admin-bg:#3A2A0F; --deny-bg:#43201B; --boot-bg:#1B2C42;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E1513; --panel:#16201D; --panel2:#1E2A26; --ink:#E6EDEA; --muted:#93A39D; --line:#33423D; --line2:#4E605A;
+  --player:#3FBFA6; --admin:#E0A23A; --deny:#E86B5C; --boot:#7FA3D4; --neutral:#8E9C97;
+  --player-bg:#123A33; --admin-bg:#3A2A0F; --deny-bg:#43201B; --boot-bg:#1B2C42;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5}
+.wrap{max-width:1240px;margin:0 auto;padding:36px 24px 64px}
+header{display:grid;grid-template-columns:1fr auto;gap:24px;align-items:end;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+h1{font-size:30px;font-weight:600;letter-spacing:-0.01em;margin:0 0 6px;text-wrap:balance}
+.sub{color:var(--muted);margin:0;max-width:62ch}
+.facts{display:grid;grid-template-columns:repeat(2,auto);gap:4px 18px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.facts b{color:var(--ink);font-weight:500}
+h2{font-size:18px;font-weight:600;margin:40px 0 8px;letter-spacing:-0.005em}
+p{max-width:68ch}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px 14px 10px}
+figure svg{display:block;width:100%;height:auto;max-width:100%}
+figcaption{color:var(--muted);font-size:13px;margin:10px 4px 0;max-width:none}
+.legend{display:flex;flex-wrap:wrap;gap:10px 22px;margin:12px 4px 0;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{display:inline-block;width:26px;height:0;border-top:2.5px solid}
+.legend i.dash{border-top-style:dashed}
+.legend .pl i{border-color:var(--player)} .legend .ad i{border-color:var(--admin)}
+.legend .dn i{border-color:var(--deny)} .legend .bt i{border-color:var(--boot)} .legend .nu i{border-color:var(--neutral)}
+code{font-family:var(--mono);font-size:0.92em;background:var(--panel2);padding:1px 5px;border-radius:3px}
+/* svg classes */
+.sv text{font-family:var(--sans);fill:var(--ink);font-size:12px}
+.sv .m{font-family:var(--mono);font-size:11.5px}
+.sv .t{font-weight:600;font-size:13px}
+.sv .mu{fill:var(--muted)}
+.sv .sm{font-size:11px}
+.sv .zone{fill:none;stroke:var(--line2);stroke-dasharray:6 5}
+.sv .band{fill:var(--panel2);stroke:none}
+.sv .node{fill:var(--panel);stroke:var(--line2);stroke-width:1.2}
+.sv .inner{fill:var(--panel2);stroke:var(--line);stroke-width:1}
+.sv .ctr{fill:var(--panel);stroke:var(--line2)}
+.sv .pub{fill:var(--admin-bg);stroke:none}
+.sv .priv{fill:var(--boot-bg);stroke:none}
+.sv .pl{stroke:var(--player);fill:none;stroke-width:2}
+.sv .ad{stroke:var(--admin);fill:none;stroke-width:2}
+.sv .dn{stroke:var(--deny);fill:none;stroke-width:2;stroke-dasharray:5 4}
+.sv .bt{stroke:var(--boot);fill:none;stroke-width:1.8;stroke-dasharray:7 4}
+.sv .nu{stroke:var(--neutral);fill:none;stroke-width:1.6}
+.sv .lpl{fill:var(--player);font-weight:500} .sv .lad{fill:var(--admin);font-weight:500}
+.sv .ldn{fill:var(--deny);font-weight:500} .sv .lbt{fill:var(--boot);font-weight:500} .sv .lnu{fill:var(--neutral)}
+.sv .lbg{fill:var(--panel);stroke:none}
+.sv marker path{stroke:none}
+.sv #ap path{fill:var(--player)} .sv #aa path{fill:var(--admin)} .sv #ad path{fill:var(--deny)}
+.sv #ab path{fill:var(--boot)} .sv #an path{fill:var(--neutral)}
+.sv #fp path{fill:var(--player)} .sv #fb path{fill:var(--boot)}
+.sv #fa path{fill:var(--admin)} .sv #fn path{fill:var(--neutral)}
+.sv .x{stroke:var(--deny);stroke-width:2.4}
+.sv .gate{fill:var(--player-bg);stroke:var(--player);stroke-width:1.4}
+.sv .step{fill:var(--panel);stroke:var(--line2);stroke-width:1.2}
+.sv .stepb{fill:var(--boot-bg);stroke:var(--boot);stroke-width:1.2}
+/* table */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:860px}
+th,td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+th{font-weight:600;background:var(--panel2);font-size:12.5px}
+th.src{width:190px}
+tbody tr:last-child td{border-bottom:none}
+td.src{font-weight:500}
+.ok,.no,.some{font-family:var(--mono);font-size:12px;display:inline-block;padding:2px 7px;border-radius:3px;white-space:nowrap}
+.ok{background:var(--player-bg);color:var(--player)} .no{background:var(--deny-bg);color:var(--deny)} .some{background:var(--admin-bg);color:var(--admin)}
+td small{display:block;color:var(--muted);margin-top:3px;font-size:12px}
+.layers{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:8px}
+.layer{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.layer b{display:block;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.layer p{margin:0;font-size:13.5px;max-width:none}
+@media (max-width:800px){.layers{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<header>
+  <div>
+    <h1>club.eh CTF Range</h1>
+    <p class="sub">Four Linodes in one private VPC. One door in (OpenVPN), one public face (the scoreboard), one host that runs hostile code with no way out, one SIEM that only the admin can see.</p>
+  </div>
+  <div class="facts">
+    <span>region</span><b>us-iad</b>
+    <span>VPC</span><b>10.0.0.0/24</b>
+    <span>VPN pool</span><b>10.8.0.0/24</b>
+    <span>challenge net</span><b>172.30.0.0/16</b>
+    <span>player ports</span><b>30000–32767 · 10000–10100</b>
+    <span>running cost</span><b>≈ $0.36 / h</b>
+  </div>
+</header>
+
+<h2>Topology and every path a packet may take</h2>
+<figure>
+<svg class="sv" viewBox="0 0 1200 830" role="img" aria-label="Four nodes inside a Linode VPC behind a Cloud Firewall. Players enter only through OpenVPN on the gateway and can reach only challenge ports on the challenge host and the scoreboard. The admin address reaches everything. The challenge host has no public interface and no route out; its containers can only talk to each other. Private nodes bootstrap through a proxy on the gateway. Wazuh is reachable only from the admin VPN address.">
+<defs>
+  <marker id="ap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="an" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+</defs>
+
+<!-- INTERNET BAND -->
+<rect x="40" y="16" width="1120" height="74" rx="4" class="band"/>
+<text x="56" y="36" class="t mu sm" style="letter-spacing:.08em">INTERNET</text>
+<text x="200" y="56" text-anchor="middle" class="t">Players</text>
+<text x="200" y="72" text-anchor="middle" class="mu sm">OpenVPN clients · one .ovpn per CTFd account</text>
+<text x="470" y="56" text-anchor="middle" class="t">Operator’s Mac</text>
+<text x="470" y="72" text-anchor="middle" class="mu sm">ctf_manager.sh · CA private key (never leaves) · admin.ovpn</text>
+<text x="700" y="56" text-anchor="middle" class="t">Anyone</text>
+<text x="700" y="72" text-anchor="middle" class="mu sm">scoreboard visitors</text>
+<rect x="900" y="30" width="230" height="46" rx="3" class="node"/>
+<text x="1015" y="49" text-anchor="middle" class="t">Linode API</text>
+<text x="1015" y="66" text-anchor="middle" class="mu sm">VPC · Cloud Firewalls · Linodes</text>
+<line x1="640" y1="52" x2="892" y2="52" class="ad" marker-end="url(#aa)"/>
+<text x="766" y="46" text-anchor="middle" class="sm lad">creates · user-data gzip ≤ 16 KB</text>
+
+<!-- CLOUD FIREWALL -->
+<rect x="40" y="112" width="1120" height="40" rx="3" class="zone"/>
+<text x="56" y="130" class="t sm" style="letter-spacing:.08em">LINODE CLOUD FIREWALL</text>
+<text x="56" y="145" class="mu sm">attached at creation · inbound DROP · enforced outside the instance, survives a host ruleset flush</text>
+<text x="1144" y="137" text-anchor="end" class="m sm mu">allowed in: 1194/udp → gateway · 80,443 → CTFd · 22 from operator IPs · VPC ↔ VPC</text>
+
+<!-- VPC -->
+<rect x="40" y="176" width="1120" height="640" rx="4" class="zone"/>
+<text x="56" y="196" class="t sm" style="letter-spacing:.08em">VPC ctf-vpc</text>
+<text x="150" y="196" class="m sm mu">10.0.0.0/24 · us-iad · no transit routing through members (fabric fact)</text>
+
+<!-- inbound arrows through firewall -->
+<line x1="200" y1="90" x2="200" y2="234" class="pl" marker-end="url(#ap)"/>
+<rect x="206" y="160" width="128" height="16" class="lbg"/><text x="210" y="172" class="m sm lpl">1194/udp OpenVPN</text>
+<line x1="700" y1="90" x2="700" y2="234" class="nu" marker-end="url(#an)"/>
+<rect x="706" y="160" width="120" height="16" class="lbg"/><text x="710" y="172" class="m sm lnu">80 · 443 HTTPS</text>
+<line x1="440" y1="90" x2="330" y2="234" class="ad" marker-end="url(#aa)"/>
+<line x1="500" y1="90" x2="520" y2="234" class="ad" marker-end="url(#aa)"/>
+<rect x="392" y="160" width="86" height="16" class="lbg"/><text x="396" y="172" class="m sm lad">22 SSH (bastion)</text>
+<rect x="528" y="200" width="46" height="16" class="lbg"/><text x="532" y="212" class="m sm lad">22 SSH</text>
+
+<!-- NODE 1 GATEWAY -->
+<rect x="80" y="236" width="300" height="230" rx="4" class="node"/>
+<rect x="80" y="236" width="300" height="24" rx="4" class="pub"/>
+<text x="92" y="253" class="t">1 · GATEWAY</text>
+<text x="368" y="253" text-anchor="end" class="m sm lad">public 1:1 NAT</text>
+<text x="92" y="280" class="m">ctf-gateway · 10.0.0.2</text>
+<text x="92" y="300" class="sm">OpenVPN <tspan class="m">1194/udp</tspan> · ccd-exclusive · tls-crypt · CRL</text>
+<text x="92" y="317" class="sm">nftables — forward policy <tspan class="m">DROP</tspan>: the choke point</text>
+<text x="92" y="334" class="sm">tinyproxy <tspan class="m">:3128</tspan> · dnsmasq <tspan class="m">:53</tspan> · chrony <tspan class="m">:123</tspan> → private nodes</text>
+<text x="92" y="351" class="sm">SSH bastion · wazuh-agent → <tspan class="m">10.0.0.5:1514</tspan></text>
+<text x="92" y="368" class="sm mu">no client-to-client · no redirect-gateway</text>
+<text x="92" y="385" class="sm mu">VPN→VPC masqueraded to .2; attribution via CN↔IP log</text>
+<rect x="92" y="400" width="276" height="54" rx="3" class="inner"/>
+<text x="104" y="418" class="t sm">tun0 · VPN pool <tspan class="m">10.8.0.0/24</tspan></text>
+<text x="104" y="436" class="sm"><tspan class="lad">admin</tspan> <tspan class="m">10.8.0.50</tspan>   <tspan class="lpl">players</tspan> <tspan class="m">10.8.0.100 – .149</tspan></text>
+<text x="104" y="449" class="sm mu">unmapped CN → rejected</text>
+
+<!-- NODE 2 CTFd -->
+<rect x="460" y="236" width="300" height="230" rx="4" class="node"/>
+<rect x="460" y="236" width="300" height="24" rx="4" class="pub"/>
+<text x="472" y="253" class="t">2 · CTFd</text>
+<text x="748" y="253" text-anchor="end" class="m sm lad">public 1:1 NAT</text>
+<text x="472" y="280" class="m">ctf-ctfd · 10.0.0.3</text>
+<text x="472" y="300" class="sm">Caddy <tspan class="m">80/443</tspan> → CTFd <tspan class="m">:8000</tspan> (compose)</text>
+<text x="472" y="317" class="sm">MariaDB · Redis · <tspan class="m">vpn_handout</tspan> plugin (1 profile / account)</text>
+<text x="472" y="334" class="sm">registry <tspan class="m">10.0.0.3:5000</tspan> — bound to VPC address only</text>
+<text x="472" y="351" class="sm">Swarm manager — challenges kept off it by placement constraints</text>
+<text x="472" y="368" class="sm"><tspan class="m">ctfd-whale</tspan> → Docker via socket proxy · frps <tspan class="m">:10000–10100</tspan> on VPC IP · frpc</text>
+<rect x="472" y="384" width="276" height="70" rx="3" class="inner"/>
+<text x="484" y="402" class="t sm">guard rules (nftables, ahead of Docker’s chains)</text>
+<text x="484" y="419" class="sm">drop <tspan class="m">30000–32767</tspan> on WAN iface — ingress-mode backstop</text>
+<text x="484" y="434" class="sm">drop <tspan class="m">10000–10100</tspan> on WAN too · containers ✕ metadata ✕ host ✕ SIEM</text>
+<text x="484" y="449" class="sm">SSH only from operator IPs + gateway</text>
+
+<!-- NODE 4 WAZUH -->
+<rect x="840" y="236" width="300" height="230" rx="4" class="node"/>
+<rect x="840" y="236" width="300" height="24" rx="4" class="priv"/>
+<text x="852" y="253" class="t">4 · WAZUH SIEM</text>
+<text x="1128" y="253" text-anchor="end" class="m sm lbt">VPC-only · no public interface</text>
+<text x="852" y="280" class="m">ctf-wazuh · 10.0.0.5 · 16 GB</text>
+<text x="852" y="300" class="sm">indexer (8 GB heap) · manager · dashboard <tspan class="m">:443</tspan></text>
+<text x="852" y="317" class="sm">agents from .2 .3 .4 on <tspan class="m">1514/1515</tspan></text>
+<text x="852" y="334" class="sm">enrolment password → sealed after deploy</text>
+<text x="852" y="351" class="sm">egress: gateway proxy (kept, for updates)</text>
+<rect x="852" y="370" width="276" height="84" rx="3" class="inner"/>
+<text x="864" y="388" class="t sm">who can open the dashboard</text>
+<text x="864" y="406" class="sm"><tspan class="lad">admin 10.8.0.50</tspan> — yes (arrives as .2 after NAT)</text>
+<text x="864" y="423" class="sm"><tspan class="ldn">players</tspan> — dropped at the gateway, never arrive</text>
+<text x="864" y="440" class="sm"><tspan class="ldn">challenge host .4</tspan> — agent events only, nothing else</text>
+
+<!-- node4 <-> gateway over the top -->
+<polyline points="990,236 990,214 240,214 240,236" class="bt" marker-start="url(#ab)" marker-end="url(#ab)"/>
+<rect x="470" y="204" width="290" height="16" class="lbg"/>
+<text x="615" y="216" text-anchor="middle" class="m sm lbt">proxy 3128 · DNS 53 · NTP 123  (kept for Wazuh)</text>
+
+<!-- VPN POOL PANEL (row 2, left) -->
+<rect x="80" y="520" width="300" height="270" rx="4" class="node"/>
+<text x="92" y="540" class="t">VPN clients, as the gateway sees them</text>
+<line x1="230" y1="466" x2="230" y2="520" class="nu"/>
+<rect x="236" y="484" width="90" height="16" class="lbg"/><text x="240" y="496" class="m sm lnu">terminated on tun0</text>
+<rect x="92" y="552" width="276" height="74" rx="3" class="inner" style="stroke:var(--admin)"/>
+<text x="104" y="571" class="t sm lad">ADMIN</text>
+<text x="160" y="571" class="m">10.8.0.50</text>
+<text x="104" y="589" class="sm">admin.ovpn — hand-carried, never served by CTFd</text>
+<text x="104" y="606" class="sm">→ every VPC address, every port</text>
+<text x="104" y="620" class="sm mu">Wazuh 443 · SSH 22 · registry · challenge ports</text>
+<rect x="92" y="638" width="276" height="140" rx="3" class="inner" style="stroke:var(--player)"/>
+<text x="104" y="657" class="t sm lpl">PLAYERS</text>
+<text x="170" y="657" class="m">10.8.0.100 – .149</text>
+<text x="104" y="675" class="sm">one .ovpn per CTFd account · fixed IP · CN↔IP logged</text>
+<text x="104" y="693" class="sm">→ <tspan class="m">10.0.0.4:30000–32767</tspan> · <tspan class="m">10.0.0.3:80/443</tspan> + <tspan class="m">10000–10100</tspan></text>
+<text x="104" y="716" class="sm ldn">✕ other players   ✕ Wazuh   ✕ SSH anywhere</text>
+<text x="104" y="733" class="sm ldn">✕ registry   ✕ proxy   ✕ internet through the tunnel</text>
+<text x="104" y="752" class="sm mu">pushed routes: only 10.0.0.3 and 10.0.0.4</text>
+<text x="104" y="768" class="sm mu">revoke: CRL + live session kill via mgmt socket</text>
+
+<!-- NODE 3 CHALLENGE -->
+<rect x="460" y="520" width="300" height="270" rx="4" class="node"/>
+<rect x="460" y="520" width="300" height="24" rx="4" class="priv"/>
+<text x="472" y="537" class="t">3 · CHALLENGE HOST</text>
+<text x="748" y="537" text-anchor="end" class="m sm lbt">VPC-only · no default route</text>
+<text x="472" y="564" class="m">ctf-challenge · 10.0.0.4</text>
+<text x="472" y="582" class="sm">Swarm worker · pulls only from <tspan class="m">10.0.0.3:5000</tspan></text>
+<text x="472" y="599" class="sm">runs untrusted player code — treated as hostile</text>
+<rect x="472" y="612" width="276" height="112" rx="3" class="inner"/>
+<text x="484" y="630" class="t sm">overlay <tspan class="m">ctf_challenges 172.30.0.0/16</tspan></text>
+<rect x="484" y="640" width="120" height="40" rx="3" class="ctr"/>
+<text x="544" y="656" text-anchor="middle" class="m sm">example-web</text>
+<text x="544" y="671" text-anchor="middle" class="sm mu">→ host <tspan class="m">:30001</tspan></text>
+<rect x="616" y="640" width="120" height="40" rx="3" class="ctr" style="stroke-dasharray:4 3"/>
+<text x="676" y="656" text-anchor="middle" class="m sm">7-3f9a… (whale)</text>
+<text x="676" y="671" text-anchor="middle" class="sm mu">per-player · frpc dials in</text>
+<text x="484" y="699" class="sm">static: <tspan class="m">mode=host</tspan> · dynamic: no ports, <tspan class="m">dnsrr</tspan>, unique flag</text>
+<text x="484" y="715" class="sm">cap_drop ALL · read-only · pids · flag as secret</text>
+<text x="472" y="745" class="sm"><tspan class="t sm">ctf_guard:</tspan> containers ↔ containers, nothing else</text>
+<text x="472" y="762" class="sm mu">host: proxy config deleted + gateway refuses it</text>
+<text x="472" y="778" class="sm mu">wazuh-agent → <tspan class="m">10.0.0.5:1514</tspan></text>
+
+<!-- players -> node3 challenge ports -->
+<line x1="368" y1="700" x2="458" y2="700" class="pl" marker-end="url(#ap)"/>
+<rect x="374" y="704" width="80" height="16" class="lbg"/><text x="378" y="716" class="m sm lpl">30000–32767</text>
+<!-- players -> ctfd -->
+<line x1="368" y1="670" x2="480" y2="468" class="pl" marker-end="url(#ap)"/>
+<rect x="392" y="548" width="66" height="30" class="lbg"/><text x="396" y="560" class="m sm lpl">80 · 443</text><text x="396" y="574" class="m sm lpl">10000–10100</text>
+<!-- admin -> wazuh (over the gap) -->
+<polyline points="368,586 430,586 430,492 990,492 990,468" class="ad" marker-end="url(#aa)"/>
+<rect x="560" y="480" width="340" height="16" class="lbg"/>
+<text x="730" y="492" text-anchor="middle" class="sm lad">admin → every node, every port  (Wazuh 443 · SSH 22 · …)</text>
+<!-- node3 -> gateway proxy (bootstrap, revoked) -->
+<polyline points="458,590 404,590 404,446 382,446" class="bt" marker-end="url(#ab)"/>
+<rect x="386" y="608" width="70" height="30" class="lbg"/>
+<text x="421" y="620" text-anchor="middle" class="m sm lbt">3128 · 53</text>
+<text x="421" y="633" text-anchor="middle" class="sm ldn">✕ after deploy</text>
+<!-- node3 <-> node2 swarm/registry -->
+<line x1="610" y1="468" x2="610" y2="518" class="nu" marker-start="url(#an)" marker-end="url(#an)"/>
+<rect x="616" y="500" width="150" height="16" class="lbg"/>
+<text x="620" y="512" class="m sm lnu">swarm 2377·7946·4789 · registry 5000</text>
+
+<!-- DENIALS PANEL (row 2, right) -->
+<rect x="840" y="520" width="300" height="270" rx="4" class="node"/>
+<text x="852" y="540" class="t">Where the containers’ packets go to die</text>
+<rect x="876" y="560" width="252" height="54" rx="3" class="inner" style="stroke:var(--deny)"/>
+<text x="888" y="579" class="t sm">Linode metadata</text>
+<text x="888" y="596" class="m sm">169.254.169.254 · fd00:a9fe:a9fe::1</text>
+<text x="888" y="609" class="sm mu">blocked in forward + container chains, all nodes</text>
+<rect x="876" y="630" width="252" height="46" rx="3" class="inner" style="stroke:var(--deny)"/>
+<text x="888" y="649" class="t sm">The internet · other VPC nodes</text>
+<text x="888" y="666" class="sm mu">no default route, guard drop, proxy refused</text>
+<line x1="760" y1="586" x2="874" y2="586" class="dn" marker-end="url(#ad)"/>
+<line x1="808" y1="578" x2="822" y2="594" class="x"/><line x1="822" y1="578" x2="808" y2="594" class="x"/>
+<line x1="760" y1="652" x2="874" y2="652" class="dn" marker-end="url(#ad)"/>
+<line x1="808" y1="644" x2="822" y2="660" class="x"/><line x1="822" y1="644" x2="808" y2="660" class="x"/>
+<text x="1002" y="700" text-anchor="middle" class="m sm ldn">ZERO_OUTBOUND</text>
+<text x="1002" y="716" text-anchor="middle" class="sm mu">nftables rule on the challenge host,</text>
+<text x="1002" y="731" text-anchor="middle" class="sm mu">priority ahead of Docker, never flushed</text>
+<text x="1002" y="756" text-anchor="middle" class="sm mu">verified post-deploy from inside a</text>
+<text x="1002" y="771" text-anchor="middle" class="sm mu">running container: 4 targets, 4 refusals</text>
+</svg>
+<div class="legend">
+  <span class="pl"><i></i>players</span>
+  <span class="ad"><i></i>admin / operator</span>
+  <span class="bt"><i class="dash"></i>bootstrap egress via gateway (proxy, DNS, NTP)</span>
+  <span class="nu"><i></i>platform plumbing</span>
+  <span class="dn"><i class="dash"></i>denied — drawn because the design turns on it</span>
+</div>
+<figcaption>Every arrow is a real allowed path with its port; the two red ones are the denials the whole design exists to enforce. Node 3’s host has no route off the VPC at all — Linode’s fabric will not forward through a member — so its only way out during setup was the gateway proxy, which now refuses it. Players are a fixed address each, and the gateway’s forward chain decides what that address may touch. Per-player instances (ctfd-whale) live on the same overlay under the same guard; players reach them through <code>frps</code> on the CTFd node’s VPC address, and <code>frpc</code> dials <em>into</em> the instance — it never dials out.</figcaption>
+</figure>
+
+<h2>How frp reaches a private instance &mdash; and what it costs</h2>
+<p>Per-player instances are created with <strong>no published ports</strong> and a
+<code>dnsrr</code> endpoint: nothing on the challenge host listens for the player. The only
+way in is an frp tunnel, and understanding its direction is the whole security argument.</p>
+<figure>
+<svg class="sv" viewBox="0 0 1200 470" role="img" aria-label="Data path for a per-player instance. frpc opens one outbound control connection to frps at startup. When a player starts an instance, whale rewrites frpc's configuration through its admin API, frpc dials into the container over the overlay network, and frps listens on a port in the ten-thousand range on the VPC address. Player bytes travel player to frps to frpc to container. The container itself never initiates any connection.">
+<defs>
+  <marker id="fp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="fb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="fn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+</defs>
+
+<rect x="24" y="150" width="150" height="86" rx="4" class="node"/>
+<text x="99" y="180" text-anchor="middle" class="t">Player</text>
+<text x="99" y="199" text-anchor="middle" class="m sm">10.8.0.117</text>
+<text x="99" y="217" text-anchor="middle" class="sm mu">over the VPN</text>
+
+<rect x="200" y="150" width="104" height="86" rx="4" class="node"/>
+<text x="252" y="180" text-anchor="middle" class="t sm">gateway</text>
+<text x="252" y="199" text-anchor="middle" class="m sm">10.0.0.2</text>
+<text x="252" y="217" text-anchor="middle" class="sm mu">forward chain</text>
+
+<rect x="340" y="40" width="440" height="390" rx="4" class="node"/>
+<rect x="340" y="40" width="440" height="24" rx="4" class="pub"/>
+<text x="352" y="57" class="t">CTFd node &mdash; 10.0.0.3 (public)</text>
+
+<rect x="358" y="86" width="180" height="74" rx="3" class="inner"/>
+<text x="448" y="107" text-anchor="middle" class="t sm">CTFd + whale</text>
+<text x="448" y="126" text-anchor="middle" class="sm mu">decides who gets what</text>
+<text x="448" y="144" text-anchor="middle" class="sm mu">and which port</text>
+
+<rect x="584" y="86" width="180" height="74" rx="3" class="inner" style="stroke:var(--deny)"/>
+<text x="674" y="107" text-anchor="middle" class="t sm">frpc</text>
+<text x="674" y="126" text-anchor="middle" class="m sm">admin API :7400</text>
+<text x="674" y="144" text-anchor="middle" class="sm ldn">config can be rewritten</text>
+
+<rect x="358" y="290" width="180" height="82" rx="3" class="inner"/>
+<text x="448" y="313" text-anchor="middle" class="t sm">frps</text>
+<text x="448" y="332" text-anchor="middle" class="m sm">listens 10000&ndash;10100</text>
+<text x="448" y="350" text-anchor="middle" class="sm mu">on the VPC address only</text>
+<text x="448" y="366" text-anchor="middle" class="m sm">control :7000</text>
+
+<rect x="840" y="40" width="336" height="390" rx="4" class="node"/>
+<rect x="840" y="40" width="336" height="24" rx="4" class="priv"/>
+<text x="852" y="57" class="t">Challenge host &mdash; 10.0.0.4 (no public IP)</text>
+<rect x="866" y="180" width="284" height="96" rx="3" class="ctr"/>
+<text x="1008" y="204" text-anchor="middle" class="t sm">instance <tspan class="m">7-3f9a&hellip;</tspan></text>
+<text x="1008" y="223" text-anchor="middle" class="m sm">listens :9000</text>
+<text x="1008" y="241" text-anchor="middle" class="sm mu">no published ports &middot; dnsrr</text>
+<text x="1008" y="262" text-anchor="middle" class="sm lpl">never initiates anything</text>
+<text x="1008" y="300" text-anchor="middle" class="sm mu">overlay <tspan class="m">ctf_challenges 172.30.0.0/16</tspan></text>
+<text x="1008" y="320" text-anchor="middle" class="sm mu">guard rules unchanged: no WAN, no VPC</text>
+
+<line x1="676" y1="164" x2="676" y2="230" class="bt" marker-end="url(#fb)"/>
+<line x1="676" y1="230" x2="542" y2="300" class="bt" marker-end="url(#fb)"/>
+<rect x="560" y="196" width="230" height="30" class="lbg"/>
+<text x="564" y="208" class="sm lbt">&#9312; at startup frpc dials OUT to frps</text>
+<text x="564" y="221" class="sm mu">one connection, shared token, stays open</text>
+
+<line x1="540" y1="120" x2="580" y2="120" class="ad" marker-end="url(#fa)"/>
+<rect x="470" y="66" width="300" height="16" class="lbg"/>
+<text x="474" y="78" class="sm lad">&#9313; on Start: whale PUTs frpc's whole config, then reloads</text>
+
+<line x1="768" y1="123" x2="900" y2="123" class="nu"/>
+<line x1="900" y1="123" x2="900" y2="176" class="nu" marker-end="url(#fn)"/>
+<rect x="784" y="98" width="300" height="30" class="lbg"/>
+<text x="788" y="110" class="sm">&#9314; frpc dials <tspan class="t sm">IN</tspan> to the container over the overlay</text>
+<text x="788" y="123" class="sm mu">resolves it by service name &mdash; why frpc sits on the overlay</text>
+
+<line x1="174" y1="193" x2="196" y2="193" class="pl" marker-end="url(#fp)"/>
+<line x1="304" y1="193" x2="352" y2="193" class="pl" marker-end="url(#fp)"/>
+<line x1="352" y1="193" x2="352" y2="320" class="pl"/>
+<line x1="352" y1="320" x2="354" y2="320" class="pl" marker-end="url(#fp)"/>
+<rect x="196" y="238" width="150" height="16" class="lbg"/>
+<text x="200" y="250" class="m sm lpl">&#9315; 10.0.0.3:10043</text>
+
+<polyline points="470,290 470,262 560,262" class="pl" marker-end="url(#fp)"/>
+<polyline points="560,262 830,262 860,228" class="pl" marker-end="url(#fp)"/>
+<rect x="576" y="246" width="250" height="16" class="lbg"/>
+<text x="580" y="258" class="sm lpl">&#9316; bytes ride back down the tunnel</text>
+
+<text x="24" y="404" class="sm mu">Direction is the point: the container is dialled into, never out of, so <tspan class="m">ZERO_OUTBOUND</tspan> on the challenge host is untouched.</text>
+<text x="24" y="424" class="sm ldn">But frpc now bridges two zones the firewall would otherwise separate, and its config is rewritable over HTTP.</text>
+</svg>
+<figcaption>Steps are numbered because they are a real sequence: the control connection exists before any player arrives, whale reconfigures frpc on demand, and only then does traffic flow. The container is passive throughout &mdash; that is what preserves the zero-outbound guarantee that the whole challenge host is built around.</figcaption>
+</figure>
+
+<h2>What frp costs, honestly</h2>
+<p>frp is a hole-punching proxy. Its purpose is to make something reachable that the
+network was arranged not to reach, so adopting it necessarily gives back some of the
+isolation the rest of this design buys. Five specific costs, and what each is worth:</p>
+<div class="tbl">
+<table>
+<thead><tr><th class="src">Cost</th><th>Why it is real</th><th>What holds it down here</th></tr></thead>
+<tbody>
+<tr><td class="src">frpc bridges two zones</td>
+<td>It sits on the challenge overlay <em>and</em> the CTFd internal network. Isolation between them is now enforced by an application proxy, not by the kernel. A compromised frpc can reach any container on the overlay, on any port.</td>
+<td>frpc runs no player code and parses only frp's own protocol. It is the single most security-relevant process in the deployment.</td></tr>
+<tr><td class="src">Its config is rewritable over HTTP</td>
+<td>Whale drives frpc with <code>PUT /api/config</code> &mdash; whoever reaches <code>frpc:7400</code> with the credential can rewrite <em>every</em> proxy rule, including ones pointing at internal addresses. Whale's own docs warn against binding this to <code>0.0.0.0</code>.</td>
+<td>Bound to an internal Docker network with no host port, behind basic auth with a generated 32-char password. Not reachable from the VPN or the internet.</td></tr>
+<tr><td class="src">Hostile traffic now lands on the public node</td>
+<td>Before whale, every packet a player aimed at a challenge terminated on the isolated challenge host. Now instance traffic terminates on the node that also runs the scoreboard, its database and the Swarm manager.</td>
+<td>frps only relays; the exploitable service still runs on the challenge host. But the blast radius of an frps bug is the public node.</td></tr>
+<tr><td class="src">Pinned to frp 0.42.0 (2022)</td>
+<td>Whale speaks the INI-era admin API; frp &ge; 0.52 moved to TOML and is incompatible. So this is a four-year-old network daemon that will receive no security fixes.</td>
+<td>Reachable only from inside the VPC. Accepted deliberately &mdash; but it is the strongest argument for tearing the range down between events.</td></tr>
+<tr><td class="src"><s>Players can reach each other's instances</s> <strong>— closed</strong></td>
+<td>The gateway allows the whole player range to the whole instance port range, and ports are sequential and guessable. A player can scan <code>10.0.0.3:10000-10100</code> and connect to someone else's private instance.</td>
+<td><strong>Closed.</strong> The gateway now allows only <code>(source address . port)</code> pairs belonging to the player's own team, reconciled from CTFd every few seconds; everything else in the range hits a counted drop.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>On that last row.</strong> This was the one isolation gap whale introduced, and it is now closed. Three systems each hold a third of the answer and share a database: whale knows <em>user &rarr; port</em>, the VPN-handout plugin knows <em>user &rarr; VPN address</em> (recorded for attribution), and CTFd knows <em>user &rarr; team</em>. The plugin joins them behind a token-guarded endpoint; a poller on the gateway turns the result into an nftables set keyed on <code>ipv4_addr . inet_service</code>. Teammates share an instance, other teams are dropped. It needs CTFd in <strong>teams mode</strong> &mdash; a setup-time, irreversible choice &mdash; and degrades to per-player isolation automatically in users mode.</p>
+
+<h2>How it comes up: staged, and every stage has to prove itself</h2>
+<figure>
+<svg class="sv" viewBox="0 0 1200 250" role="img" aria-label="Deploy sequence: local PKI and secrets, then Cloud Firewalls and VPC, then the gateway alone, which must write a readiness sentinel before the other three nodes are created in parallel; each writes its own sentinel only if its firewall and key service are up; then post-provision joins the swarm, delivers profiles and the plugin, seals Wazuh, revokes the challenge host’s egress and verifies it, rotates tokens, and initialises CTFd.">
+<defs><marker id="as" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--neutral)"/></marker></defs>
+<rect x="20" y="40" width="150" height="70" rx="4" class="step"/>
+<text x="95" y="62" text-anchor="middle" class="t sm">Your Mac</text>
+<text x="95" y="79" text-anchor="middle" class="sm">CA · 52 certs · tls-crypt</text>
+<text x="95" y="94" text-anchor="middle" class="sm">secrets → disk (0600)</text>
+<line x1="170" y1="75" x2="196" y2="75" class="nu" marker-end="url(#as)"/>
+<rect x="198" y="40" width="150" height="70" rx="4" class="step"/>
+<text x="273" y="62" text-anchor="middle" class="t sm">Firewalls + VPC</text>
+<text x="273" y="79" text-anchor="middle" class="sm">3 Cloud Firewalls</text>
+<text x="273" y="94" text-anchor="middle" class="sm">state saved after each</text>
+<line x1="348" y1="75" x2="374" y2="75" class="nu" marker-end="url(#as)"/>
+<rect x="376" y="40" width="150" height="70" rx="4" class="stepb"/>
+<text x="451" y="62" text-anchor="middle" class="t sm">Gateway alone</text>
+<text x="451" y="79" text-anchor="middle" class="sm">OpenVPN · nftables</text>
+<text x="451" y="94" text-anchor="middle" class="sm">proxy · DNS · NTP</text>
+<line x1="526" y1="75" x2="552" y2="75" class="nu" marker-end="url(#as)"/>
+<rect x="554" y="48" width="118" height="54" rx="27" class="gate"/>
+<text x="613" y="70" text-anchor="middle" class="m sm">/run/ctf-nat-ready</text>
+<text x="613" y="86" text-anchor="middle" class="sm">fail-closed gate</text>
+<line x1="672" y1="75" x2="698" y2="75" class="nu" marker-end="url(#as)"/>
+<rect x="700" y="18" width="150" height="34" rx="4" class="step"/><text x="775" y="40" text-anchor="middle" class="sm">CTFd (own public IP)</text>
+<rect x="700" y="58" width="150" height="34" rx="4" class="stepb"/><text x="775" y="80" text-anchor="middle" class="sm">Challenge (via proxy)</text>
+<rect x="700" y="98" width="150" height="34" rx="4" class="stepb"/><text x="775" y="120" text-anchor="middle" class="sm">Wazuh (via proxy)</text>
+<text x="775" y="150" text-anchor="middle" class="sm mu">in parallel · profiles assembled now</text>
+<line x1="850" y1="35" x2="874" y2="35" class="nu" marker-end="url(#as)"/>
+<line x1="850" y1="75" x2="874" y2="75" class="nu" marker-end="url(#as)"/>
+<line x1="850" y1="115" x2="874" y2="115" class="nu" marker-end="url(#as)"/>
+<rect x="876" y="20" width="110" height="30" rx="15" class="gate"/><text x="931" y="40" text-anchor="middle" class="m sm">node-ready</text>
+<rect x="876" y="60" width="110" height="30" rx="15" class="gate"/><text x="931" y="80" text-anchor="middle" class="m sm">node-ready</text>
+<rect x="876" y="100" width="110" height="30" rx="15" class="gate"/><text x="931" y="120" text-anchor="middle" class="m sm">node-ready</text>
+<text x="931" y="150" text-anchor="middle" class="sm mu">written only if guard rules +</text>
+<text x="931" y="164" text-anchor="middle" class="sm mu">key service are actually up</text>
+<line x1="986" y1="75" x2="1012" y2="75" class="nu" marker-end="url(#as)"/>
+<rect x="1014" y="18" width="166" height="140" rx="4" class="step"/>
+<text x="1097" y="38" text-anchor="middle" class="t sm">Post-provision</text>
+<text x="1024" y="58" class="sm">swarm join · label · rotate tokens</text>
+<text x="1024" y="74" class="sm">SCP profiles + plugin (204 KB)</text>
+<text x="1024" y="90" class="sm">Wazuh creds · seal enrolment</text>
+<text x="1024" y="106" class="sm">revoke node 3 egress</text>
+<text x="1024" y="122" class="sm lpl">verify ×3: direct · proxy · metadata</text>
+<text x="1024" y="138" class="sm">CTFd setup · whale config · summary</text>
+<text x="20" y="200" class="sm mu">Typical wall clock ≈ 30 min; Wazuh is the long pole. If anything stops after the nodes exist, <tspan class="m">resume</tspan> continues from the gates — nothing is rebuilt.</text>
+<text x="20" y="220" class="sm mu">A failed deploy is always cleanable: <tspan class="m">teardown</tspan> discovers resources by tag and label, not only from the state file.</text>
+</svg>
+</figure>
+
+<h2>Who may reach what</h2>
+<div class="tbl">
+<table>
+<thead><tr>
+<th class="src">from ↓ &nbsp; to →</th><th>Gateway 10.0.0.2</th><th>CTFd 10.0.0.3</th><th>Challenge host 10.0.0.4</th><th>Wazuh 10.0.0.5</th><th>Internet</th><th>Metadata 169.254…</th>
+</tr></thead>
+<tbody>
+<tr><td class="src">Internet (anyone)</td><td><span class="ok">1194/udp</span></td><td><span class="ok">80 · 443</span><small>30000–32767 and 10000–10100 dropped on WAN iface</small></td><td><span class="no">no public IP</span></td><td><span class="no">no public IP</span></td><td>—</td><td>—</td></tr>
+<tr><td class="src">Operator IPs</td><td><span class="ok">22</span><small>Cloud Firewall + host allow-list</small></td><td><span class="ok">22</span></td><td><span class="no">—</span><small>via bastion only</small></td><td><span class="no">—</span><small>via bastion only</small></td><td>—</td><td>—</td></tr>
+<tr><td class="src">Admin VPN 10.8.0.50</td><td><span class="ok">22</span></td><td><span class="ok">all</span></td><td><span class="ok">all</span></td><td><span class="ok">443 · 22 · all</span></td><td><span class="no">not routed</span></td><td><span class="no">drop</span></td></tr>
+<tr><td class="src">Player VPN .100–.149</td><td><span class="no">drop</span></td><td><span class="ok">80 · 443</span><small>+ only their own team's instance ports, pinned per source address</small></td><td><span class="ok">30000–32767</span><small>tcp + udp</small></td><td><span class="no">drop</span><small>deny-first, before any allow</small></td><td><span class="no">not routed</span></td><td><span class="no">drop</span></td></tr>
+<tr><td class="src">Player → other player</td><td colspan="6"><span class="no">drop</span> &nbsp;<small style="display:inline">no <code>client-to-client</code>, and the forward chain drops VPN→VPN regardless</small></td></tr>
+<tr><td class="src">Challenge container</td><td><span class="no">drop</span></td><td><span class="no">drop</span></td><td><span class="ok">other containers</span><small>172.30.0.0/16 only</small></td><td><span class="no">drop</span></td><td><span class="no">ZERO_OUTBOUND</span></td><td><span class="no">drop</span></td></tr>
+<tr><td class="src">Challenge host (the OS)</td><td><span class="some">123 NTP</span><small>3128/53 revoked after deploy</small></td><td><span class="ok">2377 · 7946 · 4789 · 5000</span></td><td>—</td><td><span class="ok">1514 · 1515</span></td><td><span class="no">no route</span></td><td><span class="ok">host root only</span><small>cloud-init needs it each boot</small></td></tr>
+<tr><td class="src">Wazuh host</td><td><span class="ok">3128 · 53 · 123</span></td><td><span class="no">drop</span></td><td><span class="no">drop</span></td><td>—</td><td><span class="some">via proxy</span></td><td><span class="ok">host root only</span></td></tr>
+<tr><td class="src">CTFd containers</td><td><span class="no">drop</span></td><td><span class="some">Docker via socket proxy</span><small>services/networks/tasks only</small></td><td><span class="no">drop</span><small>frpc → instances over the overlay only</small></td><td><span class="no">drop</span></td><td><span class="ok">yes</span><small>images, ACME</small></td><td><span class="no">drop</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Four layers, in the order a packet meets them</h2>
+<div class="layers">
+  <div class="layer"><b>1 · Cloud Firewall</b><p>Outside the instance, attached at creation. Inbound <code>DROP</code>; only 1194/udp, 80/443 and operator SSH are punched through. Still holds if a compromised host flushes its own rules.</p></div>
+  <div class="layer"><b>2 · Host nftables</b><p>Gateway: full <code>forward DROP</code> policy — player/admin ACLs, VPN↔VPN drop, metadata drop. Docker hosts: a separate <code>ctf_guard</code> table ahead of Docker’s chains that only adds denials, never flushes.</p></div>
+  <div class="layer"><b>3 · Swarm stack / whale</b><p>Static: <code>mode=host</code>, worker-only, <code>cap_drop ALL</code>, read-only, limits, flag as a secret. Dynamic: whale via a socket proxy, no published ports, unique flag per instance, 60-min reaper, one live instance per player.</p></div>
+  <div class="layer"><b>4 · OpenVPN</b><p><code>ccd-exclusive</code>: a certificate without a static-IP entry is refused. Per-account profiles, CRL + management-socket kill for revocation, CN↔IP shipped to Wazuh for attribution.</p></div>
+</div>
+</div>
